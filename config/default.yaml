@@ -1,0 +1,28 @@
+layers:
+  layer1:
+    scanner_type: masscan
+    batch_size: 10
+    backpressure: block
+    masscan_path: masscan
+    scan_rate: 10000
+    output_file: data/scans/results.txt
+
+  layer2:
+    worker_pool:
+      max_concurrent: 200
+    modules:
+      - favicon
+      - http
+      - https
+      - rtsp
+      - onvif
+      - ssh
+    router_strategy: optimistic
+
+storage:
+  backend: sqlite
+  path: data/camera_scan.db
+
+queue:
+  maxsize: 1000
+  type: in_memory

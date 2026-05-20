@@ -1,0 +1,21 @@
+# Data
+data/scans/
+data/*.db
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+paused.conf
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+my_note*
+
+exported_session/
