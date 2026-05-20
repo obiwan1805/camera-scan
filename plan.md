@@ -869,30 +869,17 @@ stale_timeout: 300  # 5 minutes of no progress
 ---
 Summary
 
-┌──────┬────────────────────┬──────────────────────────────────────────────────────────┐
-│ Task │    Description     │                      Files Created                       │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 1    │ Job schemas and DB │ src/jobs/schemas.py, migration                           │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 2    │ JobManager core    │ src/jobs/manager.py                                      │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 3    │ Resource manager   │ src/jobs/resources.py                                    │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 4    │ Scanner service    │ src/jobs/scanner_service.py, src/scanner/orchestrator.py │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 5    │ Progress tracking  │ src/jobs/progress.py                                     │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 6    │ Timeout/retry      │ src/jobs/timeout.py                                      │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 7    │ Recovery           │ src/jobs/recovery.py                                     │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 8    │ Discord bot        │ src/bot/discord_bot.py                                   │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 9    │ CLI                │ src/cli/job_cli.py                                       │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 10   │ Testing            │ tests/unit/, tests/integration/                          │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 11   │ Documentation      │ docs/, updated README.md                                 │
-├──────┼────────────────────┼──────────────────────────────────────────────────────────┤
-│ 12   │ Deployment         │ deploy/                                                  │
-└──────┴────────────────────┴──────────────────────────────────────────────────────────┘
+| Task | Description         | Files Created                                           |
+| ---- | ------------------- | ------------------------------------------------------- |
+| 1    | Job schemas and DB  | src/jobs/schemas.py, migration                          |
+| 2    | JobManager core     | src/jobs/manager.py                                     |
+| 3    | Resource manager    | src/jobs/resources.py                                   |
+| 4    | Scanner service     | src/jobs/scanner_service.py, src/scanner/orchestrator.py |
+| 5    | Progress tracking   | src/jobs/progress.py                                    |
+| 6    | Timeout/retry       | src/jobs/timeout.py                                     |
+| 7    | Recovery            | src/jobs/recovery.py                                    |
+| 8    | Discord bot         | src/bot/discord_bot.py                                  |
+| 9    | CLI                 | src/cli/job_cli.py                                      |
+| 10   | Testing             | tests/unit/, tests/integration/                         |
+| 11   | Documentation       | docs/, updated README.md                                |
+| 12   | Deployment          | deploy/                                                 |
