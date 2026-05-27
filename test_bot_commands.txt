@@ -1,0 +1,54 @@
+=== DICT COMMANDS ===
+
+/dict add dict_type:default_creds value:admin:admin
+/dict add dict_type:default_creds value:root:root
+/dict show dict_type:default_creds
+/dict list
+
+/dict import dict_type:default_usernames file:<upload test_usernames.txt>
+/dict show dict_type:default_usernames
+
+/dict import dict_type:default_passwords file:<upload test_passwords.txt>
+/dict show dict_type:default_passwords
+
+/dict list
+
+/dict remove id:1
+/dict list
+
+
+
+=== TARGET COMMANDS ===
+
+/target add name:DS-2CD2142FWD vendor:hikvision category:ip_camera aliases:DS-2CD2142,DS-2CD2142F
+/target add name:NVR-5216-16P vendor:dahua category:nvr
+/target add name:IPC-HDW5442T vendor:dahua category:ip_camera aliases:IPC-HDW5442
+/target list
+/target list vendor:hikvision
+/target show id:1
+/target remove id:2
+/target list
+
+
+
+=== POC COMMANDS ===
+
+/poc add name:cve-2021-36260 script_content:"import requests\nr = requests.get(target)" cve_id:CVE-2021-36260 vendor:hikvision protocol:http severity:critical description:RCE in Hikvision cameras
+/poc add name:test-poc script_content:"print('hello')" vendor:dahua severity:low description:Test PoC
+/poc list
+/poc list vendor:hikvision
+/poc show id:1
+/poc remove id:2
+/poc list
+
+
+
+=== SCAN + CRUD TOGETHER ===
+
+/scan start
+/dict list                              -> should work during scan
+/target list                            -> should work during scan
+/scan pause
+/dict list                              -> should work after pause
+/target list                            -> should work after pause
+/scan start                             -> should resume from paused.conf
