@@ -1,0 +1,224 @@
+"""ScanBot — Discord bot for controlling the camera-scan pipeline."""
+import os
+import gc
+import asyncio
+import traceback
+from pathlib import Path
+
+import discord
+from discord.ext import commands
+
+from src.core.config import get_default_config
+from src.pipeline.builder import PipelineBuilder, Pipeline
+from src.layers import PortScanner, CIDRInputSource, Fingerprinter
+from src.storage.sqlite_backend import SQLiteBackend
+from src.core.durable_queue import DurableQueue
+
+from .scan import ScanGroup
+from .config import ConfigGroup
+from .poc import PoCGroup
+from .dict import DictGroup
+from .target import TargetGroup
+
+
+class ScanBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+
+        super().__init__(command_prefix="!", intents=intents)
+
+        self.pipeline: Pipeline | None = None
+        self.scanner: PortScanner | None = None
+        self.fingerprinter: Fingerprinter | None = None
+        self.storage: SQLiteBackend | None = None
+        self._scan_task: asyncio.Task | None = None
+        self._status = "idle"
+        self._stop_signal = False
+        self._delete_paused = False
+        self._overrides: dict[str, int] = {}
+
+        self._command_groups = [
+            ScanGroup(self), ConfigGroup(self),
+            PoCGroup(self), DictGroup(self), TargetGroup(self),
+        ]
+
+    async def setup_hook(self):
+        # Persistent storage for CRUD commands — lives for bot's entire lifetime
+        self.db = SQLiteBackend()
+        await self.db.connect()
+
+        guild_id = os.environ.get("DISCORD_GUILD_ID") or os.environ.get("GUILD_ID")
+
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+
+            self.tree.clear_commands(guild=guild)
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync(guild=None)
+
+            for group in self._command_groups:
+                self.tree.add_command(group, guild=guild)
+            await self.tree.sync(guild=guild)
+            print(f"Synced commands to Server ID: {guild_id}")
+        else:
+            for group in self._command_groups:
+                self.tree.add_command(group)
+            await self.tree.sync()
+            print("Synced commands globally.")
+
+    async def _run_pipeline(self):
+        """Build and run the pipeline to completion. Only place that calls pipeline.stop()."""
+        try:
+            config = get_default_config()
+            if "scan_rate" in self._overrides:
+                config.layers.scan_rate = self._overrides["scan_rate"]
+            if "max_concurrent" in self._overrides:
+                config.layer2.worker_pool.max_concurrent = self._overrides["max_concurrent"]
+            if "batch_size" in self._overrides:
+                config.layers.batch_size = self._overrides["batch_size"]
+
+            builder = PipelineBuilder(config)
+            self.storage = builder.build_storage()
+            queues = builder.build_queues(self.storage)
+
+            self.scanner = PortScanner(
+                config=config.layers,
+                output_queue=queues[0],
+                cidr_file="data/cidrs.txt",
+                storage=self.storage,
+            )
+            self.fingerprinter = Fingerprinter(
+                config=config.layer2,
+                input_queue=queues[0],
+                output_queue=queues[1],
+                storage=self.storage,
+            )
+
+            input_source = CIDRInputSource("data/cidrs.txt")
+
+            self.pipeline = Pipeline(
+                layers=[self.scanner, self.fingerprinter],
+                queues=queues,
+                storage=self.storage,
+                input_source=input_source,
+            )
+
+            await self.pipeline.start()
+            self._status = "running"
+            self._stop_signal = False
+
+            # Wait for scanner to finish OR stop signal
+            if self.scanner._watcher_task:
+                stop_event = asyncio.create_task(self._wait_stop_signal())
+                done, _ = await asyncio.wait(
+                    [self.scanner._watcher_task, stop_event],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                stop_event.cancel()
+
+            # Wait for fingerprinter to drain the queue OR stop signal
+            while (queues[0].size() > 0 and self.fingerprinter._running
+                   and not self._stop_signal):
+                await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Pipeline error: {e}")
+            traceback.print_exc()
+        finally:
+            if self.pipeline:
+                await self.pipeline.stop(resume=not self._delete_paused)
+            if self._delete_paused:
+                paused = Path("paused.conf")
+                if paused.exists():
+                    paused.unlink()
+                    print("[Bot] Deleted paused.conf — next scan starts fresh")
+            self._status = "idle"
+            self._stop_signal = False
+            self._delete_paused = False
+            self.pipeline = None
+            self.scanner = None
+            self.fingerprinter = None
+            self.storage = None
+            gc.collect()
+
+    async def _wait_stop_signal(self):
+        while not self._stop_signal:
+            await asyncio.sleep(0.5)
+
+    def _build_progress_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="Camera Scan Progress", color=0x5865F2)
+
+        if self.scanner:
+            elapsed = (
+                asyncio.get_event_loop().time() - self.scanner._start_time
+                if self.scanner._start_time
+                else 0
+            )
+            total = self.scanner._total_ips
+            scanned = self.scanner._scanned_ips
+            percentage = self.scanner._scan_percentage
+            discovered = self.scanner._discovered
+            hit_rate = (discovered / scanned * 100) if scanned > 0 else 0
+
+            progress_str = (
+                f"{scanned:,} / {total:,} ({percentage}%)"
+                if total > 0
+                else f"{scanned:,}"
+            )
+            layer1 = (
+                f"Scanned:    {progress_str}\n"
+                f"Discovered: {discovered:,}\n"
+                f"Hit rate:   {hit_rate:.2f}%\n"
+                f"Elapsed:    {elapsed:.1f}s"
+            )
+            embed.add_field(
+                name="Layer 1 — Port Scanner", value=f"```\n{layer1}\n```", inline=False
+            )
+
+        if self.fingerprinter:
+            processed = self.fingerprinter._processed
+            successful = self.fingerprinter._successful
+            failed = self.fingerprinter._failed
+            skipped = self.fingerprinter._skipped
+            active = self.fingerprinter._processing_count
+            elapsed = (
+                asyncio.get_event_loop().time() - self.fingerprinter._start_time
+                if self.fingerprinter._start_time
+                else 0
+            )
+            rate = processed / elapsed if elapsed > 0 else 0
+
+            layer2 = (
+                f"Processed:  {processed:,}\n"
+                f"Successful: {successful:,}\n"
+                f"Failed:     {failed:,}\n"
+                f"Skipped:    {skipped:,}\n"
+                f"Active:     {active}\n"
+                f"Rate:       {rate:.1f}/s"
+            )
+            embed.add_field(
+                name="Layer 2 — Fingerprinter",
+                value=f"```\n{layer2}\n```",
+                inline=False,
+            )
+
+        return embed
+
+    def _build_config_embed(self) -> discord.Embed:
+        defaults = get_default_config()
+        scan_rate = self._overrides.get("scan_rate", defaults.layers.scan_rate)
+        max_concurrent = self._overrides.get("max_concurrent", defaults.layer2.worker_pool.max_concurrent)
+        batch_size = self._overrides.get("batch_size", defaults.layers.batch_size)
+
+        embed = discord.Embed(title="Current Config", color=0x57F287)
+        lines = (
+            f"scan_rate:      {scan_rate:,} pps\n"
+            f"max_concurrent: {max_concurrent}\n"
+            f"batch_size:     {batch_size}"
+        )
+        embed.add_field(name="Parameters", value=f"```\n{lines}\n```", inline=False)
+        return embed
