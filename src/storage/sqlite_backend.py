@@ -70,6 +70,37 @@ class SQLiteBackend(StorageBackend):
                 created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_raw_responses_ip_port ON raw_responses(ip, port);
+            CREATE TABLE IF NOT EXISTS pocs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                cve_id TEXT,
+                vendor TEXT,
+                target_names TEXT DEFAULT '[]',
+                protocol TEXT,
+                script_type TEXT,
+                script_content TEXT,
+                description TEXT,
+                severity TEXT,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS dicts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dict_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS targets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                aliases TEXT DEFAULT '[]',
+                vendor TEXT,
+                category TEXT,
+                metadata TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
         """)
 
     async def disconnect(self) -> None:
@@ -88,7 +119,7 @@ class SQLiteBackend(StorageBackend):
     async def submit(self, collection: str, items: List[Any]) -> None:
         """Non-blocking enqueue for concurrent writers. Returns immediately."""
         if not self._running:
-            await self.connect()
+            return
         for item in items:
             await self._write_queue.put((collection, item))
 
@@ -252,6 +283,8 @@ class SQLiteBackend(StorageBackend):
     # --- Queue operations (bypass write queue — small, synchronous ops) ---
 
     async def enqueue_item(self, queue_name: str, item_key: str, item_data: str) -> None:
+        if not self._running:
+            return
         await self._conn.execute(
             "INSERT OR IGNORE INTO claims (queue_name, item_key, item_data) VALUES (?, ?, ?)",
             (queue_name, item_key, item_data)
@@ -259,6 +292,8 @@ class SQLiteBackend(StorageBackend):
         await self._conn.commit()
 
     async def claim_item(self, queue_name: str, item_key: str) -> None:
+        if not self._running:
+            return
         await self._conn.execute(
             "UPDATE claims SET status='claimed', claimed_at=datetime('now') WHERE queue_name=? AND item_key=?",
             (queue_name, item_key)
@@ -266,6 +301,8 @@ class SQLiteBackend(StorageBackend):
         await self._conn.commit()
 
     async def ack_item(self, queue_name: str, item_key: str) -> None:
+        if not self._running:
+            return
         await self._conn.execute(
             "UPDATE claims SET status='done' WHERE queue_name=? AND item_key=?",
             (queue_name, item_key)
@@ -273,6 +310,8 @@ class SQLiteBackend(StorageBackend):
         await self._conn.commit()
 
     async def fail_item(self, queue_name: str, item_key: str) -> None:
+        if not self._running:
+            return
         await self._conn.execute(
             "UPDATE claims SET status='failed' WHERE queue_name=? AND item_key=?",
             (queue_name, item_key)
@@ -380,3 +419,64 @@ class SQLiteBackend(StorageBackend):
             "SELECT 1 FROM fingerprints WHERE ip=? AND port=?", (ip, port)
         )
         return await cursor.fetchone() is not None
+
+    # --- Generic CRUD for bot-managed tables (pocs, dicts, targets) ---
+
+    _ALLOWED_CRUD_TABLES = {"pocs", "dicts", "targets"}
+
+    async def generic_insert(self, table: str, data: dict) -> int:
+        if table not in self._ALLOWED_CRUD_TABLES:
+            raise ValueError(f"Table '{table}' not allowed for generic CRUD")
+        if not self._conn:
+            await self.connect()
+        columns = list(data.keys())
+        placeholders = ", ".join("?" for _ in columns)
+        col_str = ", ".join(columns)
+        values = [data[c] for c in columns]
+        cursor = await self._conn.execute(
+            f"INSERT INTO {table} ({col_str}) VALUES ({placeholders})", values
+        )
+        await self._conn.commit()
+        return cursor.lastrowid
+
+    async def generic_delete(self, table: str, row_id: int) -> bool:
+        if table not in self._ALLOWED_CRUD_TABLES:
+            raise ValueError(f"Table '{table}' not allowed for generic CRUD")
+        if not self._conn:
+            await self.connect()
+        cursor = await self._conn.execute(
+            f"DELETE FROM {table} WHERE id = ?", (row_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def generic_list(self, table: str, filters: Optional[dict] = None) -> List[dict]:
+        if table not in self._ALLOWED_CRUD_TABLES:
+            raise ValueError(f"Table '{table}' not allowed for generic CRUD")
+        if not self._conn:
+            await self.connect()
+        if filters:
+            clauses = " AND ".join(f"{k} = ?" for k in filters)
+            values = list(filters.values())
+            cursor = await self._conn.execute(
+                f"SELECT * FROM {table} WHERE {clauses}", values
+            )
+        else:
+            cursor = await self._conn.execute(f"SELECT * FROM {table}")
+        rows = await cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+
+    async def generic_get(self, table: str, row_id: int) -> Optional[dict]:
+        if table not in self._ALLOWED_CRUD_TABLES:
+            raise ValueError(f"Table '{table}' not allowed for generic CRUD")
+        if not self._conn:
+            await self.connect()
+        cursor = await self._conn.execute(
+            f"SELECT * FROM {table} WHERE id = ?", (row_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, row))

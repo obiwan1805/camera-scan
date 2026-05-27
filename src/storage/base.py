@@ -51,3 +51,21 @@ class StorageBackend(ABC):
     @abstractmethod
     async def has_fingerprint(self, ip: str, port: int) -> bool:
         pass
+
+    # Generic CRUD for bot-managed tables
+
+    @abstractmethod
+    async def generic_insert(self, table: str, data: dict) -> int:
+        pass
+
+    @abstractmethod
+    async def generic_delete(self, table: str, row_id: int) -> bool:
+        pass
+
+    @abstractmethod
+    async def generic_list(self, table: str, filters: Optional[dict] = None) -> List[dict]:
+        pass
+
+    @abstractmethod
+    async def generic_get(self, table: str, row_id: int) -> Optional[dict]:
+        pass

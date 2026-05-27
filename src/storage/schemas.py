@@ -58,3 +58,29 @@ class ProbeResult:
     """Return type for module probe() — fingerprint + collected raw responses."""
     fingerprint: Optional[Fingerprint] = None
     raw_responses: List[RawResponse] = field(default_factory=list)
+
+
+class PoC(BaseModel):
+    name: str
+    cve_id: Optional[str] = None
+    vendor: Optional[str] = None
+    target_names: List[str] = []
+    protocol: Optional[str] = None
+    script_type: Optional[str] = None
+    script_content: Optional[str] = None
+    description: Optional[str] = None
+    severity: Optional[str] = None
+    enabled: bool = True
+
+
+class DictEntry(BaseModel):
+    dict_type: str
+    value: str
+
+
+class Target(BaseModel):
+    name: str
+    aliases: List[str] = []
+    vendor: Optional[str] = None
+    category: Optional[str] = None
+    metadata: dict = {}
