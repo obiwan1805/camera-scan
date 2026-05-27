@@ -16,7 +16,6 @@ layers:
       - https
       - rtsp
       - onvif
-      - ssh
     router_strategy: optimistic
 
 storage:
