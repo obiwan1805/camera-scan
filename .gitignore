@@ -3,6 +3,9 @@
 # Data
 data/scans/
 data/*.db
+data/*.db-shm
+data/*.db-wal
+data/test_*.txt
 
 # Python
 __pycache__/
