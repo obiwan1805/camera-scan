@@ -1,3 +1,5 @@
+.env
+
 # Data
 data/scans/
 data/*.db

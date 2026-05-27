@@ -1,6 +1,7 @@
 """Data models using Pydantic for validation."""
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, List
+from typing import ClassVar, Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -34,3 +35,26 @@ class CameraFingerprint(BaseModel):
     status: str = "fingerprint_done"
     fingerprint: Fingerprint
     weight: float = 0.0
+
+
+class RawResponse(BaseModel):
+    """Raw response from a Layer 2 probe."""
+    ip: str
+    port: int
+    module: str
+    endpoint: str
+    status_code: Optional[int] = None
+    content_type: Optional[str] = None
+    raw_data: bytes
+
+    MAX_SIZE: ClassVar[int] = 1_048_576  # 1 MB
+
+    def truncated_data(self) -> bytes:
+        return self.raw_data[:self.MAX_SIZE]
+
+
+@dataclass
+class ProbeResult:
+    """Return type for module probe() — fingerprint + collected raw responses."""
+    fingerprint: Optional[Fingerprint] = None
+    raw_responses: List[RawResponse] = field(default_factory=list)

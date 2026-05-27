@@ -6,7 +6,7 @@ from src.core.config import get_default_config
 from src.pipeline.builder import PipelineBuilder, Pipeline
 from src.storage.sqlite_backend import SQLiteBackend
 from src.layers import PortScanner, CIDRInputSource, Fingerprinter
-from src.core.queue_protocol import InMemoryQueue, BoundedQueue
+from src.core.queue_protocol import InMemoryQueue
 from src.utils.logging import setup_logger
 
 shutdown_event = asyncio.Event()
@@ -26,12 +26,13 @@ async def main():
 
     builder = PipelineBuilder(config)
     storage = builder.build_storage()
-    queues = builder.build_queues()
+    queues = builder.build_queues(storage)
 
     scanner = PortScanner(
         config=config.layers,
         output_queue=queues[0],
-        cidr_file="data/cidrs.txt"
+        cidr_file="data/cidrs.txt",
+        storage=storage
     )
     fingerprinter = Fingerprinter(
         config=config.layer2,
@@ -56,13 +57,18 @@ async def main():
         # Wait for scanner to complete or shutdown
         scanner_task = scanner._watcher_task
         if scanner_task:
-            await asyncio.wait(
-                [scanner_task],
+            done, _ = await asyncio.wait(
+                [scanner_task, asyncio.create_task(shutdown_event.wait())],
                 return_when=asyncio.FIRST_COMPLETED,
-                timeout=None
             )
+            # Cancel the unused waiter
+            for t in done:
+                if t is not scanner_task:
+                    t.cancel()
+            if shutdown_event.is_set():
+                logger.info("Shutdown requested, stopping...")
 
-        # Wait for fingerprinter to finish processing
+        # Wait for fingerprinter to finish processing or shutdown
         logger.info("Scanner finished, waiting for fingerprinter to complete...")
         while queues[0].size() > 0 and fingerprinter._running:
             await asyncio.sleep(1)
@@ -83,7 +89,8 @@ async def main():
         total_discovered = scanner._discovered
         total_processed = fingerprinter._processed
         total_successful = fingerprinter._successful
-        db_count = await storage.count("fingerprints")
+        port_scan_count = await storage.count("port_scans")
+        fp_count = await storage.count("fingerprints")
 
         print("\n" + "="*50)
         print("SCAN SUMMARY")
@@ -92,8 +99,10 @@ async def main():
         print(f"Total processed:    {total_processed}")
         print(f"Successful:         {total_successful}")
         print(f"Failed:             {fingerprinter._failed}")
+        print(f"Skipped (resumed):  {fingerprinter._skipped}")
         print(f"Success rate:       {total_successful/total_processed*100 if total_processed > 0 else 0:.1f}%")
-        print(f"Stored in DB:       {db_count}")
+        print(f"Port scans in DB:   {port_scan_count}")
+        print(f"Fingerprints in DB: {fp_count}")
         print("="*50)
 
 if __name__ == "__main__":

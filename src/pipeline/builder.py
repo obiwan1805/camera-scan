@@ -1,9 +1,11 @@
 """Pipeline builder for constructing the processing graph."""
 from typing import List
 from src.core.config import Config
-from src.core.queue_protocol import QueueProtocol, InMemoryQueue, BoundedQueue
+from src.core.queue_protocol import QueueProtocol
+from src.core.durable_queue import DurableQueue
 from src.storage.base import StorageBackend
 from src.storage.sqlite_backend import SQLiteBackend
+from src.utils.logging import setup_logger
 
 
 class PipelineBuilder:
@@ -11,13 +13,16 @@ class PipelineBuilder:
 
     def __init__(self, config: Config):
         self.config = config
+        self._logger = setup_logger("PipelineBuilder")
 
-    def build_queues(self) -> List[QueueProtocol]:
+    def build_queues(self, storage: StorageBackend) -> List[QueueProtocol]:
+        queue_configs = [
+            ("queue_0", "port_scans", "fingerprints"),
+            ("queue_1", "fingerprints", None),
+        ]
         queues = []
-        for i in range(2):
-            base_queue = InMemoryQueue(maxsize=0)
-            queue = BoundedQueue(base_queue, self.config.queue.maxsize)
-            queues.append(queue)
+        for name, source, sink in queue_configs:
+            queues.append(DurableQueue(storage, name, source, sink))
         return queues
 
     def build_storage(self) -> StorageBackend:
@@ -48,6 +53,14 @@ class Pipeline:
     async def start(self) -> None:
         self._running = True
         await self.storage.connect()
+
+        # Recover queue state from DB before starting layers
+        for queue in self.queues:
+            if isinstance(queue, DurableQueue):
+                recovered = await queue.recover()
+                if recovered > 0:
+                    setup_logger("Pipeline").info(f"Recovered {recovered} items for {queue._queue_name}")
+
         for i, layer in enumerate(self.layers):
             if hasattr(layer, "start"):
                 if i == 0 and self.input_source:

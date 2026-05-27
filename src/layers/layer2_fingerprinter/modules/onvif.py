@@ -3,11 +3,13 @@ import asyncio
 import re
 from typing import Optional, Set
 from src.layers.layer2_fingerprinter.modules.base import ProtocolModule
-from src.storage.schemas import Fingerprint
+from src.storage.schemas import Fingerprint, ProbeResult, RawResponse
 
 
 class ONVIFModule(ProtocolModule):
-    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[ProbeResult]:
+        raw_responses = []
+
         endpoints = [
             ('/onvif/device_service', 'onvif_device_service'),
             ('/onvif/device', 'onvif_device'),
@@ -18,20 +20,21 @@ class ONVIFModule(ProtocolModule):
         ]
 
         for endpoint, probe_type in endpoints:
-            result = await self._try_onvif(ip, port, endpoint, probe_type, vendor_hint)
+            result = await self._try_onvif(ip, port, endpoint, probe_type, vendor_hint, raw_responses)
             if result:
                 return result
 
+        if raw_responses:
+            return ProbeResult(fingerprint=None, raw_responses=raw_responses)
         return None
 
-    async def _try_onvif(self, ip: str, port: int, endpoint: str, probe_type: str, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def _try_onvif(self, ip: str, port: int, endpoint: str, probe_type: str, vendor_hint: Optional[str], raw_responses: list) -> Optional[ProbeResult]:
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
                 timeout=3
             )
 
-            # Send GetDeviceInformation SOAP request
             soap_request = f'''POST {endpoint} HTTP/1.1
 Host: {ip}:{port}
 Content-Type: text/xml; charset=utf-8
@@ -54,11 +57,17 @@ SOAPAction: "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation"
             writer.close()
             await writer.wait_closed()
 
+            raw_responses.append(RawResponse(
+                ip=ip, port=port, module="onvif", endpoint=endpoint,
+                raw_data=response
+            ))
+
             response_str = response.decode(errors="ignore")
 
-            # Parse SOAP response
             if "GetDeviceInformationResponse" in response_str:
-                return self._parse_onvif_response(response_str, endpoint, probe_type)
+                fp = self._parse_onvif_response(response_str, endpoint, probe_type)
+                if fp:
+                    return ProbeResult(fingerprint=fp, raw_responses=list(raw_responses))
 
         except Exception:
             pass
@@ -66,23 +75,15 @@ SOAPAction: "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation"
 
     def _parse_onvif_response(self, response: str, endpoint: str, probe_type: str) -> Optional[Fingerprint]:
         """Parse ONVIF GetDeviceInformation response."""
-
-        # Extract manufacturer
         manufacturer_match = re.search(r'<(?:tds:)?Manufacturer>([^<]+)</(?:tds:)?Manufacturer>', response)
         manufacturer = manufacturer_match.group(1).strip() if manufacturer_match else None
 
-        # Extract model
         model_match = re.search(r'<(?:tds:)?Model>([^<]+)</(?:tds:)?Model>', response)
         model = model_match.group(1).strip() if model_match else None
 
-        # Extract firmware version
         firmware_match = re.search(r'<(?:tds:)?FirmwareVersion>([^<]+)</(?:tds:)?FirmwareVersion>', response)
         version = firmware_match.group(1).strip() if firmware_match else None
 
-        # Extract serial number
-        serial_match = re.search(r'<(?:tds:)?SerialNumber>([^<]+)</(?:tds:)?SerialNumber>', response)
-
-        # Normalize vendor name
         vendor = None
         evidence = []
 
@@ -103,7 +104,6 @@ SOAPAction: "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation"
 
         if model:
             evidence.append(f"extracted ONVIF Model: {model}")
-
         if version:
             evidence.append(f"extracted ONVIF FirmwareVersion: {version}")
 

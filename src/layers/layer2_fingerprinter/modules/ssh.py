@@ -2,11 +2,12 @@
 import asyncio
 from typing import Optional, Set
 from src.layers.layer2_fingerprinter.modules.base import ProtocolModule
-from src.storage.schemas import Fingerprint
+from src.storage.schemas import Fingerprint, ProbeResult, RawResponse
 
 
 class SSHModule(ProtocolModule):
-    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[ProbeResult]:
+        raw_responses = []
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
@@ -16,19 +17,30 @@ class SSHModule(ProtocolModule):
             writer.close()
             await writer.wait_closed()
 
+            raw_responses.append(RawResponse(
+                ip=ip, port=port, module="ssh", endpoint="/",
+                raw_data=banner
+            ))
+
             banner_str = banner.decode(errors="ignore")
             if "ssh" in banner_str.lower():
                 vendor, matched_pattern, evidence = self._detect_vendor(banner_str)
-                return Fingerprint(
-                    vendor=vendor or "ssh_device",
-                    raw_banner=banner_str[:256],
-                    services=["ssh"],
-                    probe_method="ssh_banner",
-                    evidence=evidence,
-                    matched_pattern=matched_pattern
+                return ProbeResult(
+                    fingerprint=Fingerprint(
+                        vendor=vendor or "ssh_device",
+                        raw_banner=banner_str[:256],
+                        services=["ssh"],
+                        probe_method="ssh_banner",
+                        evidence=evidence,
+                        matched_pattern=matched_pattern
+                    ),
+                    raw_responses=raw_responses
                 )
         except Exception:
             pass
+
+        if raw_responses:
+            return ProbeResult(fingerprint=None, raw_responses=raw_responses)
         return None
 
     def supported_ports(self) -> Set[int]:

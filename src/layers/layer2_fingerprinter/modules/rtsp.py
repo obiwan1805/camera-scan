@@ -3,25 +3,27 @@ import asyncio
 import re
 from typing import Optional, Set, Tuple
 from src.layers.layer2_fingerprinter.modules.base import ProtocolModule
-from src.storage.schemas import Fingerprint
+from src.storage.schemas import Fingerprint, ProbeResult, RawResponse
 
 
 class RTSPModule(ProtocolModule):
-    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
-        # Try DESCRIBE requests first (more informative)
+    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[ProbeResult]:
+        raw_responses = []
+
         for path in ['/stream1', '/cam/realmonitor', '/h264/ch1/main/av_stream', '/']:
-            result = await self._rtsp_describe(ip, port, path, vendor_hint)
+            result = await self._rtsp_describe(ip, port, path, vendor_hint, raw_responses)
             if result:
                 return result
 
-        # Fallback to OPTIONS
-        result = await self._rtsp_options(ip, port, vendor_hint)
+        result = await self._rtsp_options(ip, port, vendor_hint, raw_responses)
         if result:
             return result
 
+        if raw_responses:
+            return ProbeResult(fingerprint=None, raw_responses=raw_responses)
         return None
 
-    async def _rtsp_describe(self, ip: str, port: int, path: str, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def _rtsp_describe(self, ip: str, port: int, path: str, vendor_hint: Optional[str], raw_responses: list) -> Optional[ProbeResult]:
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
@@ -36,17 +38,22 @@ class RTSPModule(ProtocolModule):
             writer.close()
             await writer.wait_closed()
 
-            response_str = response.decode(errors="ignore")
+            raw_responses.append(RawResponse(
+                ip=ip, port=port, module="rtsp", endpoint=path,
+                raw_data=response
+            ))
 
-            # Parse RTSP response
+            response_str = response.decode(errors="ignore")
             if response_str:
-                return self._parse_rtsp_response(response_str, method="rtsp_describe", endpoint=path)
+                fp = self._parse_rtsp_response(response_str, method="rtsp_describe", endpoint=path)
+                if fp:
+                    return ProbeResult(fingerprint=fp, raw_responses=list(raw_responses))
 
         except Exception:
             pass
         return None
 
-    async def _rtsp_options(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def _rtsp_options(self, ip: str, port: int, vendor_hint: Optional[str], raw_responses: list) -> Optional[ProbeResult]:
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
@@ -61,10 +68,16 @@ class RTSPModule(ProtocolModule):
             writer.close()
             await writer.wait_closed()
 
-            response_str = response.decode(errors="ignore")
+            raw_responses.append(RawResponse(
+                ip=ip, port=port, module="rtsp", endpoint="/",
+                raw_data=response
+            ))
 
+            response_str = response.decode(errors="ignore")
             if response_str:
-                return self._parse_rtsp_response(response_str, method="rtsp_options", endpoint="/")
+                fp = self._parse_rtsp_response(response_str, method="rtsp_options", endpoint="/")
+                if fp:
+                    return ProbeResult(fingerprint=fp, raw_responses=list(raw_responses))
 
         except Exception:
             pass
@@ -72,7 +85,6 @@ class RTSPModule(ProtocolModule):
 
     def _parse_rtsp_response(self, response: str, method: str, endpoint: str) -> Optional[Fingerprint]:
         """Parse RTSP response for vendor information."""
-        # Check for RTSP/1.0 response
         if not response.startswith("RTSP/1.0") and not response.startswith("RTSP/1.1"):
             return None
 
@@ -121,7 +133,6 @@ class RTSPModule(ProtocolModule):
 
         vendor = None
         matched_pattern = None
-        response_lower = response.lower()
 
         for vendor_name, patterns in vendor_patterns.items():
             for pattern, pattern_name in patterns:
@@ -133,7 +144,6 @@ class RTSPModule(ProtocolModule):
                 break
 
         if vendor:
-            # Try to extract model from SDP or response
             model, model_pattern = self._extract_model_from_rtsp(response)
             version, version_pattern = self._extract_version_from_rtsp(response)
 
@@ -158,7 +168,6 @@ class RTSPModule(ProtocolModule):
         return None
 
     def _extract_model_from_rtsp(self, response: str) -> Tuple[Optional[str], Optional[str]]:
-        """Extract model from RTSP response. Returns (model, pattern)."""
         patterns = [
             (r'DS-2CD\d+[A-Za-z\d-]*', 'DS-2CD'),
             (r'IPC-HFW\d+[A-Za-z\d-]*', 'IPC-HFW'),
@@ -168,7 +177,6 @@ class RTSPModule(ProtocolModule):
             (r'SNC-\w+', 'SNC'),
             (r'WV-\w+', 'WV')
         ]
-
         for pattern, pattern_name in patterns:
             match = re.search(pattern, response)
             if match:
@@ -176,14 +184,12 @@ class RTSPModule(ProtocolModule):
         return None, None
 
     def _extract_version_from_rtsp(self, response: str) -> Tuple[Optional[str], Optional[str]]:
-        """Extract version from RTSP response. Returns (version, pattern)."""
         patterns = [
             (r'V\d+\.\d+\.\d+', 'Vx.x.x'),
             (r'v\d+\.\d+\.\d+', 'vx.x.x'),
             (r'version[=:]\s*(\d+\.\d+\.\d+)', 'version='),
             (r'firmware[=:]\s*(\d+\.\d+\.\d+)', 'firmware=')
         ]
-
         for pattern, pattern_name in patterns:
             match = re.search(pattern, response, re.IGNORECASE)
             if match:

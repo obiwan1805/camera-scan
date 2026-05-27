@@ -5,21 +5,15 @@ import mmh3
 import ssl
 from typing import Optional, Set
 from src.layers.layer2_fingerprinter.modules.base import ProtocolModule
-from src.storage.schemas import Fingerprint
+from src.storage.schemas import Fingerprint, ProbeResult, RawResponse
 
 # Favicon MMH3 hash signatures
-# Add your known signatures here
 FAVICON_HASHES = {
     -1466785234: "dahua",
     2019488876: "dahua",
     1653394551: "dahua",
     999357577: "hikvision",
 }
-
-###
-# Hikvision:		999357577
-# Dahua:			-1466785234, 2019488876, 1653394551
-###
 
 # Fallback paths to try if /favicon.ico doesn't exist
 FAVICON_PATHS = [
@@ -34,26 +28,27 @@ FAVICON_PATHS = [
 class FaviconModule(ProtocolModule):
     """Quick vendor identification using favicon MMH3 hashing."""
 
-    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[ProbeResult]:
         """Probe for favicon and identify vendor by MMH3 hash."""
-        # If we already have a vendor hint, no need to probe
         if vendor_hint:
             return None
 
-        # Try HTTP first, then HTTPS
+        raw_responses = []
+
         for protocol in ["http", "https"]:
-            result = await self._probe_protocol(ip, port, protocol)
+            result = await self._probe_protocol(ip, port, protocol, raw_responses)
             if result:
                 return result
 
+        if raw_responses:
+            return ProbeResult(fingerprint=None, raw_responses=raw_responses)
         return None
 
-    async def _probe_protocol(self, ip: str, port: int, protocol: str) -> Optional[Fingerprint]:
+    async def _probe_protocol(self, ip: str, port: int, protocol: str, raw_responses: list) -> Optional[ProbeResult]:
         """Probe favicon using HTTP or HTTPS."""
         try:
             connector = None
             if protocol == "https":
-                # Create SSL context that doesn't verify certificates (common in cameras)
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
@@ -64,7 +59,7 @@ class FaviconModule(ProtocolModule):
                 timeout=aiohttp.ClientTimeout(total=3)
             ) as session:
                 for path in FAVICON_PATHS:
-                    result = await self._get_favicon_hash(ip, port, path, protocol, session)
+                    result = await self._get_favicon_hash(ip, port, path, protocol, session, raw_responses)
                     if result:
                         return result
 
@@ -78,14 +73,14 @@ class FaviconModule(ProtocolModule):
         port: int,
         path: str,
         protocol: str,
-        session: aiohttp.ClientSession
-    ) -> Optional[Fingerprint]:
+        session: aiohttp.ClientSession,
+        raw_responses: list
+    ) -> Optional[ProbeResult]:
         """Download favicon and compute MMH3 hash."""
         try:
             url = f"{protocol}://{ip}:{port}{path}"
             async with session.get(url) as resp:
                 if resp.status == 200:
-                    # Limit size to 10KB to avoid processing large images
                     if resp.content_length and resp.content_length > 10240:
                         return None
 
@@ -93,21 +88,35 @@ class FaviconModule(ProtocolModule):
                     if len(data) > 10240:
                         return None
 
-                    # Compute MMH3 hash
-                    hash_value = mmh3.hash(data)
+                    raw_responses.append(RawResponse(
+                        ip=ip, port=port, module="favicon", endpoint=path,
+                        status_code=resp.status,
+                        content_type=resp.headers.get("Content-Type"),
+                        raw_data=data
+                    ))
 
-                    # Look up vendor
+                    hash_value = mmh3.hash(data)
                     vendor = FAVICON_HASHES.get(hash_value)
 
                     if vendor:
-                        return Fingerprint(
-                            vendor=vendor,
-                            probe_method="favicon_mmh3_hash",
-                            evidence=f"matched MMH3 hash {hash_value} → {vendor}",
-                            matched_pattern=str(hash_value),
-                            endpoint=path,
-                            services=[protocol]
+                        return ProbeResult(
+                            fingerprint=Fingerprint(
+                                vendor=vendor,
+                                probe_method="favicon_mmh3_hash",
+                                evidence=f"matched MMH3 hash {hash_value} -> {vendor}",
+                                matched_pattern=str(hash_value),
+                                endpoint=path,
+                                services=[protocol]
+                            ),
+                            raw_responses=list(raw_responses)
                         )
+                else:
+                    raw_responses.append(RawResponse(
+                        ip=ip, port=port, module="favicon", endpoint=path,
+                        status_code=resp.status,
+                        content_type=resp.headers.get("Content-Type"),
+                        raw_data=b""
+                    ))
 
         except Exception:
             pass

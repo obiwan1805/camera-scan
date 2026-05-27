@@ -3,56 +3,52 @@ import asyncio
 import re
 from typing import Optional, Set, Tuple
 from src.layers.layer2_fingerprinter.modules.base import ProtocolModule
-from src.storage.schemas import Fingerprint
+from src.storage.schemas import Fingerprint, ProbeResult, RawResponse
 from src.layers.layer2_fingerprinter.modules.header_parser import detect_vendor_from_headers, extract_model_from_headers
 from src.layers.layer2_fingerprinter.modules.html_parser import detect_vendor_from_html, extract_model_from_html, extract_version_from_html
 import aiohttp
 
 
 class HTTPModule(ProtocolModule):
-    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def probe(self, ip: str, port: int, vendor_hint: Optional[str] = None) -> Optional[ProbeResult]:
+        raw_responses = []
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                # If we have a vendor hint, go directly to vendor-specific probing
                 if vendor_hint == "hikvision":
-                    result = await self._hikvision_probe(ip, port, session, vendor_hint=True)
+                    result = await self._hikvision_probe(ip, port, session, raw_responses, vendor_hint=True)
                     if result:
                         return result
                 elif vendor_hint == "dahua":
-                    result = await self._dahua_probe(ip, port, session, vendor_hint=True)
+                    result = await self._dahua_probe(ip, port, session, raw_responses, vendor_hint=True)
                     if result:
                         return result
 
-                # No vendor hint or vendor didn't match - try standard probing
-                # Stage 1: Basic HTTP GET
-                result = await self._basic_http_probe(ip, port, session, vendor_hint)
+                result = await self._basic_http_probe(ip, port, session, raw_responses, vendor_hint)
                 if result:
                     return result
 
-                # Stage 2: Hikvision specific (only if no vendor hint or hint not hikvision)
                 if not vendor_hint or vendor_hint != "hikvision":
-                    result = await self._hikvision_probe(ip, port, session)
+                    result = await self._hikvision_probe(ip, port, session, raw_responses)
                     if result:
                         return result
 
-                # Stage 3: Dahua specific (only if no vendor hint or hint not dahua)
                 if not vendor_hint or vendor_hint != "dahua":
-                    result = await self._dahua_probe(ip, port, session)
+                    result = await self._dahua_probe(ip, port, session, raw_responses)
                     if result:
                         return result
 
         except Exception:
             pass
+
+        if raw_responses:
+            return ProbeResult(fingerprint=None, raw_responses=raw_responses)
         return None
 
-    async def _basic_http_probe(self, ip: str, port: int, session: aiohttp.ClientSession, vendor_hint: Optional[str] = None) -> Optional[Fingerprint]:
+    async def _basic_http_probe(self, ip: str, port: int, session: aiohttp.ClientSession, raw_responses: list, vendor_hint: Optional[str] = None) -> Optional[ProbeResult]:
         try:
             url = f"http://{ip}:{port}"
             async with session.get(url, allow_redirects=False) as resp:
                 headers = dict(resp.headers)
-                vendor = detect_vendor_from_headers(headers)
-
-                # Try to get HTML content if available
                 html = None
                 if resp.content_length and resp.content_length < 100000:
                     try:
@@ -60,7 +56,15 @@ class HTTPModule(ProtocolModule):
                     except Exception:
                         pass
 
-                # If no vendor from headers, try HTML
+                raw_responses.append(RawResponse(
+                    ip=ip, port=port, module="http", endpoint="/",
+                    status_code=resp.status,
+                    content_type=resp.headers.get("Content-Type"),
+                    raw_data=(html or "").encode(errors="replace")
+                ))
+
+                vendor = detect_vendor_from_headers(headers)
+
                 html_vendor = None
                 if not vendor and html:
                     html_vendor = detect_vendor_from_html(html)
@@ -74,20 +78,17 @@ class HTTPModule(ProtocolModule):
                     matched_pattern = None
                     probe_method = None
 
-                    # Check Server header
                     server = headers.get("Server", "")
                     if vendor in server.lower():
                         probe_method = "http_server_header"
                         evidence.append(f"matched Server header: {server}")
                         matched_pattern = f"Server header contains '{vendor}'"
 
-                    # Try to get model from headers
                     if vendor:
                         model = extract_model_from_headers(headers, vendor)
                         if model:
                             evidence.append(f"extracted model from headers: {model}")
 
-                    # Try to get model/version from HTML
                     if html and vendor:
                         if not model:
                             model = extract_model_from_html(html, vendor)
@@ -101,25 +102,27 @@ class HTTPModule(ProtocolModule):
                         probe_method = "http_html_content"
                         evidence.append(f"detected vendor in HTML content: {vendor}")
 
-                    return Fingerprint(
-                        vendor=vendor,
-                        model=model,
-                        version=version,
-                        raw_banner=str(headers)[:256],
-                        services=["http"],
-                        probe_method=probe_method,
-                        evidence="; ".join(evidence) if evidence else None,
-                        matched_pattern=matched_pattern,
-                        endpoint="/"
+                    return ProbeResult(
+                        fingerprint=Fingerprint(
+                            vendor=vendor,
+                            model=model,
+                            version=version,
+                            raw_banner=str(headers)[:256],
+                            services=["http"],
+                            probe_method=probe_method,
+                            evidence="; ".join(evidence) if evidence else None,
+                            matched_pattern=matched_pattern,
+                            endpoint="/"
+                        ),
+                        raw_responses=list(raw_responses)
                     )
         except Exception:
             pass
         return None
 
-    async def _hikvision_probe(self, ip: str, port: int, session: aiohttp.ClientSession, vendor_hint: Optional[bool] = None) -> Optional[Fingerprint]:
+    async def _hikvision_probe(self, ip: str, port: int, session: aiohttp.ClientSession, raw_responses: list, vendor_hint: Optional[bool] = None) -> Optional[ProbeResult]:
         """Hikvision-specific probing with enhanced version detection."""
         paths = [
-            # XML endpoints
             ('/ISAPI/System/deviceInfo', 'xml_endpoint'),
             ('/ISAPI/System/firmwareInfo', 'xml_endpoint'),
             ('/ISAPI/System/serialNumber', 'xml_endpoint'),
@@ -128,7 +131,6 @@ class HTTPModule(ProtocolModule):
             ('/PSIA/System/deviceInfo', 'xml_endpoint'),
             ('/ISAPI/ContentMgmt/download', 'xml_endpoint'),
             ('/System/upgradeFirmware', 'xml_endpoint'),
-            # Other potential endpoints
             ('/ISAPI/Security/users/checkUser', 'xml_endpoint'),
             ('/version', 'xml_endpoint'),
             ('/ISAPI/Streaming/channels', 'xml_endpoint'),
@@ -141,7 +143,13 @@ class HTTPModule(ProtocolModule):
                     if resp.status == 200:
                         content = await resp.text()
 
-                        # Stage 1: Parse XML for device info
+                        raw_responses.append(RawResponse(
+                            ip=ip, port=port, module="http", endpoint=path,
+                            status_code=resp.status,
+                            content_type=resp.headers.get("Content-Type"),
+                            raw_data=content.encode(errors="replace")
+                        ))
+
                         vendor = "hikvision"
                         model, model_pattern = self._extract_hikvision_model(content)
                         version, version_pattern = self._extract_hikvision_version(content)
@@ -153,19 +161,18 @@ class HTTPModule(ProtocolModule):
                             evidence.append(f"matched XML pattern: {version_pattern} -> {version}")
 
                         if model or version:
-                            return Fingerprint(
-                                vendor=vendor,
-                                model=model,
-                                version=version,
-                                raw_banner=content[:256],
-                                services=["http"],
-                                probe_method=probe_type,
-                                evidence="; ".join(evidence) if evidence else f"matched Hikvision endpoint: {path}",
-                                matched_pattern=model_pattern or version_pattern,
-                                endpoint=path
+                            return ProbeResult(
+                                fingerprint=Fingerprint(
+                                    vendor=vendor, model=model, version=version,
+                                    raw_banner=content[:256], services=["http"],
+                                    probe_method=probe_type,
+                                    evidence="; ".join(evidence) if evidence else f"matched Hikvision endpoint: {path}",
+                                    matched_pattern=model_pattern or version_pattern,
+                                    endpoint=path
+                                ),
+                                raw_responses=list(raw_responses)
                             )
 
-                        # Stage 2: Parse HTML for version patterns
                         html_vendor = detect_vendor_from_html(content)
                         if html_vendor == "hikvision":
                             if not model:
@@ -179,18 +186,16 @@ class HTTPModule(ProtocolModule):
                             if version:
                                 evidence.append(f"extracted version from HTML: {version}")
 
-                            return Fingerprint(
-                                vendor="hikvision",
-                                model=model,
-                                version=version,
-                                raw_banner=content[:256],
-                                services=["http"],
-                                probe_method="hikvision_html_content",
-                                evidence="; ".join(evidence),
-                                endpoint=path
+                            return ProbeResult(
+                                fingerprint=Fingerprint(
+                                    vendor="hikvision", model=model, version=version,
+                                    raw_banner=content[:256], services=["http"],
+                                    probe_method="hikvision_html_content",
+                                    evidence="; ".join(evidence), endpoint=path
+                                ),
+                                raw_responses=list(raw_responses)
                             )
 
-                        # Stage 3: Parse for CSS/JS version patterns
                         version, asset_pattern = self._extract_version_from_assets(content)
                         if version:
                             model = extract_model_from_html(content, "hikvision")
@@ -198,35 +203,31 @@ class HTTPModule(ProtocolModule):
                             if model:
                                 evidence.append(f"extracted model from HTML: {model}")
 
-                            return Fingerprint(
-                                vendor="hikvision",
-                                model=model,
-                                version=version,
-                                raw_banner=content[:256],
-                                services=["http"],
-                                probe_method="hikvision_asset_version",
-                                evidence="; ".join(evidence),
-                                matched_pattern=asset_pattern,
-                                endpoint=path
+                            return ProbeResult(
+                                fingerprint=Fingerprint(
+                                    vendor="hikvision", model=model, version=version,
+                                    raw_banner=content[:256], services=["http"],
+                                    probe_method="hikvision_asset_version",
+                                    evidence="; ".join(evidence),
+                                    matched_pattern=asset_pattern, endpoint=path
+                                ),
+                                raw_responses=list(raw_responses)
                             )
             except Exception:
                 pass
         return None
 
-    async def _dahua_probe(self, ip: str, port: int, session: aiohttp.ClientSession, vendor_hint: Optional[bool] = None) -> Optional[Fingerprint]:
+    async def _dahua_probe(self, ip: str, port: int, session: aiohttp.ClientSession, raw_responses: list, vendor_hint: Optional[bool] = None) -> Optional[ProbeResult]:
         """Dahua-specific probing with enhanced version detection."""
         paths = [
-            # RPC2 endpoints (XML-RPC)
             ('/RPC2_Login', 'xml_rpc'),
             ('/RPC2', 'xml_rpc'),
             ('/RPC2_Login?action=login', 'xml_rpc'),
-            # Config manager endpoints
             ('/cgi-bin/configManager.cgi?action=getConfig&name=SystemInfo', 'cgi_endpoint'),
             ('/cgi-bin/configManager.cgi?action=getConfig&name=NetWork.Common', 'cgi_endpoint'),
             ('/cgi-bin/configManager.cgi?action=getConfig&name=System.General', 'cgi_endpoint'),
             ('/cgi-bin/magicBox.cgi?action=getSystemInfo', 'cgi_endpoint'),
             ('/cgi-bin/magicBox.cgi?action=getSystemInfo&date=0', 'cgi_endpoint'),
-            # JSON endpoints
             ('/config/system', 'json_endpoint'),
             ('/RPC2_Login?action=getSystemInfo', 'xml_rpc'),
             ('/cgi-bin/configManager.cgi?action=getConfig&name=System.SerialNumber', 'cgi_endpoint'),
@@ -239,7 +240,13 @@ class HTTPModule(ProtocolModule):
                     if resp.status == 200:
                         content = await resp.text()
 
-                        # Stage 1: Check for XML-RPC response
+                        raw_responses.append(RawResponse(
+                            ip=ip, port=port, module="http", endpoint=path,
+                            status_code=resp.status,
+                            content_type=resp.headers.get("Content-Type"),
+                            raw_data=content.encode(errors="replace")
+                        ))
+
                         if '<methodResponse>' in content or '<?xml' in content:
                             vendor = "dahua"
                             model, model_pattern = self._extract_dahua_model_from_rpc(content)
@@ -252,19 +259,18 @@ class HTTPModule(ProtocolModule):
                                 evidence.append(f"matched XML-RPC pattern: {version_pattern} -> {version}")
 
                             if model or version:
-                                return Fingerprint(
-                                    vendor=vendor,
-                                    model=model,
-                                    version=version,
-                                    raw_banner=content[:256],
-                                    services=["http"],
-                                    probe_method=probe_type,
-                                    evidence="; ".join(evidence) if evidence else f"matched XML-RPC response: {path}",
-                                    matched_pattern=model_pattern or version_pattern,
-                                    endpoint=path
+                                return ProbeResult(
+                                    fingerprint=Fingerprint(
+                                        vendor=vendor, model=model, version=version,
+                                        raw_banner=content[:256], services=["http"],
+                                        probe_method=probe_type,
+                                        evidence="; ".join(evidence) if evidence else f"matched XML-RPC response: {path}",
+                                        matched_pattern=model_pattern or version_pattern,
+                                        endpoint=path
+                                    ),
+                                    raw_responses=list(raw_responses)
                                 )
 
-                        # Stage 2: Parse JSON response
                         if '{' in content and '}' in content:
                             vendor = "dahua"
                             model, model_pattern = self._extract_dahua_model_from_json(content)
@@ -277,19 +283,18 @@ class HTTPModule(ProtocolModule):
                                 evidence.append(f"matched JSON key: {version_pattern} -> {version}")
 
                             if model or version:
-                                return Fingerprint(
-                                    vendor=vendor,
-                                    model=model,
-                                    version=version,
-                                    raw_banner=content[:256],
-                                    services=["http"],
-                                    probe_method=probe_type,
-                                    evidence="; ".join(evidence) if evidence else f"matched JSON response: {path}",
-                                    matched_pattern=model_pattern or version_pattern,
-                                    endpoint=path
+                                return ProbeResult(
+                                    fingerprint=Fingerprint(
+                                        vendor=vendor, model=model, version=version,
+                                        raw_banner=content[:256], services=["http"],
+                                        probe_method=probe_type,
+                                        evidence="; ".join(evidence) if evidence else f"matched JSON response: {path}",
+                                        matched_pattern=model_pattern or version_pattern,
+                                        endpoint=path
+                                    ),
+                                    raw_responses=list(raw_responses)
                                 )
 
-                        # Stage 3: Check HTML title
                         html_vendor = detect_vendor_from_html(content)
                         if html_vendor == "dahua":
                             model = extract_model_from_html(content, "dahua")
@@ -301,18 +306,16 @@ class HTTPModule(ProtocolModule):
                             if version:
                                 evidence.append(f"extracted version from HTML: {version}")
 
-                            return Fingerprint(
-                                vendor="dahua",
-                                model=model,
-                                version=version,
-                                raw_banner=content[:256],
-                                services=["http"],
-                                probe_method="dahua_html_title",
-                                evidence="; ".join(evidence),
-                                endpoint=path
+                            return ProbeResult(
+                                fingerprint=Fingerprint(
+                                    vendor="dahua", model=model, version=version,
+                                    raw_banner=content[:256], services=["http"],
+                                    probe_method="dahua_html_title",
+                                    evidence="; ".join(evidence), endpoint=path
+                                ),
+                                raw_responses=list(raw_responses)
                             )
 
-                        # Stage 4: Check for Dahua-specific response patterns
                         if "Dahua" in content or "DAHUA" in content or "dahua" in content:
                             model = extract_model_from_html(content, "dahua")
                             version = extract_version_from_html(content)
@@ -323,18 +326,16 @@ class HTTPModule(ProtocolModule):
                             if version:
                                 evidence.append(f"extracted version from HTML: {version}")
 
-                            return Fingerprint(
-                                vendor="dahua",
-                                model=model,
-                                version=version,
-                                raw_banner=content[:256],
-                                services=["http"],
-                                probe_method="dahua_content_pattern",
-                                evidence="; ".join(evidence),
-                                endpoint=path
+                            return ProbeResult(
+                                fingerprint=Fingerprint(
+                                    vendor="dahua", model=model, version=version,
+                                    raw_banner=content[:256], services=["http"],
+                                    probe_method="dahua_content_pattern",
+                                    evidence="; ".join(evidence), endpoint=path
+                                ),
+                                raw_responses=list(raw_responses)
                             )
 
-                        # Stage 5: Check for IPC-HFW/IPC-HDBW patterns
                         dahua_model, model_pattern = self._extract_dahua_model_from_content(content)
                         if dahua_model:
                             version = extract_version_from_html(content)
@@ -342,16 +343,15 @@ class HTTPModule(ProtocolModule):
                             if version:
                                 evidence.append(f"extracted version from HTML: {version}")
 
-                            return Fingerprint(
-                                vendor="dahua",
-                                model=dahua_model,
-                                version=version,
-                                raw_banner=content[:256],
-                                services=["http"],
-                                probe_method="dahua_model_pattern",
-                                evidence="; ".join(evidence),
-                                matched_pattern=model_pattern,
-                                endpoint=path
+                            return ProbeResult(
+                                fingerprint=Fingerprint(
+                                    vendor="dahua", model=dahua_model, version=version,
+                                    raw_banner=content[:256], services=["http"],
+                                    probe_method="dahua_model_pattern",
+                                    evidence="; ".join(evidence),
+                                    matched_pattern=model_pattern, endpoint=path
+                                ),
+                                raw_responses=list(raw_responses)
                             )
             except Exception:
                 pass

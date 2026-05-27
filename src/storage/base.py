@@ -1,6 +1,6 @@
 """Storage interface and base classes."""
 from abc import ABC, abstractmethod
-from typing import Any, List
+from typing import Any, List, Optional
 
 
 class StorageBackend(ABC):
@@ -24,4 +24,30 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def count(self, collection: str) -> int:
+        pass
+
+    # Queue operations for durable queue support
+
+    @abstractmethod
+    async def enqueue_item(self, queue_name: str, item_key: str, item_data: str) -> None:
+        pass
+
+    @abstractmethod
+    async def claim_item(self, queue_name: str, item_key: str) -> None:
+        pass
+
+    @abstractmethod
+    async def ack_item(self, queue_name: str, item_key: str) -> None:
+        pass
+
+    @abstractmethod
+    async def fail_item(self, queue_name: str, item_key: str) -> None:
+        pass
+
+    @abstractmethod
+    async def recover_queue(self, queue_name: str, source_collection: str, sink_collection: Optional[str]) -> List[tuple]:
+        pass
+
+    @abstractmethod
+    async def has_fingerprint(self, ip: str, port: int) -> bool:
         pass
