@@ -1,6 +1,7 @@
 """Main port scanner implementing Scanner interface."""
 import asyncio
 import re
+import signal
 from pathlib import Path
 from typing import AsyncIterator, Optional
 from src.core.interfaces import Scanner, InputSource
@@ -9,7 +10,7 @@ from src.core.config import Layer1Config
 from src.storage.base import StorageBackend
 from src.storage.schemas import PortScanResult
 from src.utils.logging import setup_logger
-from src.utils.network import count_total_ips
+from src.utils.network import count_total_ips, count_ips_in_range
 
 
 class CIDRInputSource(InputSource):
@@ -61,34 +62,85 @@ class PortScanner(Scanner):
         self._watcher_task = asyncio.create_task(self._run_scanner(input_source))
         self._status_task = asyncio.create_task(self._status_reporter())
 
+    def _parse_paused_conf(self, paused_conf: Path) -> None:
+        """Parse paused.conf to extract ranges and estimate total IPs."""
+        ranges = []
+        num_ports = 0
+        with open(paused_conf) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("range = "):
+                    ranges.append(line.split("=", 1)[1].strip())
+                elif line.startswith("ports = "):
+                    ports_str = line.split("=", 1)[1].strip()
+                    for part in ports_str.split(","):
+                        part = part.strip()
+                        if "-" in part:
+                            a, b = part.split("-")
+                            num_ports += int(b) - int(a) + 1
+                        else:
+                            num_ports += 1
+        if ranges:
+            self._total_ips = sum(count_ips_in_range(r) for r in ranges)
+        if num_ports:
+            self._num_ports = num_ports
+
+    def _fix_adapter_port(self, paused_conf: Path) -> None:
+        """Rewrite paused.conf with a valid power-of-2 adapter-port range."""
+        lines = paused_conf.read_text().splitlines()
+        fixed = []
+        for line in lines:
+            if line.strip().startswith("adapter-port"):
+                fixed.append("adapter-port = 61000-61063")
+            else:
+                fixed.append(line)
+        paused_conf.write_text("\n".join(fixed) + "\n")
+
     async def _run_scanner(self, input_source: InputSource) -> None:
         output_path = Path(self.config.output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.exists():
+            output_path.unlink()
 
-        cidr_list = [cidr async for cidr in input_source.read()]
+        paused_conf = Path("paused.conf")
+        resuming = paused_conf.exists()
 
-        # Calculate total IPs from CIDR ranges
-        self._total_ips = count_total_ips(cidr_list)
-        self.logger.info(f"Total IPs to scan: {self._total_ips:,}")
-
-        ports_file = Path("data/ports.txt")
-        if ports_file.exists():
-            with open(ports_file) as f:
-                ports = ",".join(f.read().strip().split("\n"))
+        if resuming:
+            # Parse ranges from paused.conf to estimate total IPs
+            self._parse_paused_conf(paused_conf)
+            # Fix adapter-port in paused.conf — masscan rejects non-power-of-2 ranges
+            self._fix_adapter_port(paused_conf)
+            cmd = [
+                self.config.masscan_path,
+                "--resume", str(paused_conf),
+                "-oL", str(output_path),
+                "--output-flush",
+                "--status",
+                "--rate", str(self.config.scan_rate),
+            ]
+            self.logger.info(f"Resuming masscan from paused.conf (total IPs: {self._total_ips:,})")
         else:
-            ports = "80,554,8080,8554"
+            cidr_list = [cidr async for cidr in input_source.read()]
+            self._total_ips = count_total_ips(cidr_list)
+            self.logger.info(f"Total IPs to scan: {self._total_ips:,}")
 
-        cmd = [
-            self.config.masscan_path,
-            "-oL", str(output_path),
-            "--output-flush",
-            "--status",
-            "--rate", str(self.config.scan_rate)
-        ]
-        cmd.extend(["-p", ports])
-        cmd.extend(cidr_list)
+            ports_file = Path("data/ports.txt")
+            if ports_file.exists():
+                with open(ports_file) as f:
+                    ports = ",".join(f.read().strip().split("\n"))
+            else:
+                ports = "80,554,8080,8554"
 
-        self.logger.info(f"Starting masscan: {' '.join(cmd)}")
+            cmd = [
+                self.config.masscan_path,
+                "-oL", str(output_path),
+                "--output-flush",
+                "--status",
+                "--rate", str(self.config.scan_rate)
+            ]
+            cmd.extend(["-p", ports])
+            cmd.extend(cidr_list)
+            self.logger.info(f"Starting masscan: {' '.join(cmd)}")
 
         try:
             self._proc = await asyncio.create_subprocess_exec(
@@ -131,7 +183,7 @@ class PortScanner(Scanner):
                     if not chunk:
                         if self._masscan_done.is_set():
                             break  # Masscan finished and file fully drained
-                        await asyncio.sleep(0.1)
+                        await asyncio.sleep(0.5)
                         continue
 
                     # Handle partial last line
@@ -154,71 +206,92 @@ class PortScanner(Scanner):
                                 batch.append((ip, port))
                                 self._discovered += 1
                                 if len(batch) >= 10:
-                                    for item in batch:
-                                        await self.output_queue.put(item)
                                     if self.storage:
                                         await self.storage.submit("port_scans", [
                                             PortScanResult(ip=ip, port=port) for ip, port in batch
                                         ])
+                                    for item in batch:
+                                        await self.output_queue.put(item)
                                     self.logger.debug(f"Batch: {len(batch)} IPs")
                                     batch = []
 
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             pass
         finally:
             # Flush remaining batch
             if batch:
+                if self.storage:
+                    await self.storage.submit("port_scans", [
+                        PortScanResult(ip=ip, port=port) for ip, port in batch
+                    ])
                 for item in batch:
                     try:
                         await self.output_queue.put(item)
                     except Exception:
                         pass
-                if self.storage:
-                    await self.storage.submit("port_scans", [
-                        PortScanResult(ip=ip, port=port) for ip, port in batch
-                    ])
 
     async def _read_stderr(self, stderr) -> None:
         """Read masscan stderr for progress information."""
-        percentage_pattern = re.compile(r'\[(\d+)%\]')
+        progress_pattern = re.compile(r'(\d+\.\d+)%\s*done')
         hosts_pattern = re.compile(r'Scanning (\d+) hosts')
-        rate_pattern = re.compile(r'rate: (\d+\.\d+)')
+        rate_pattern = re.compile(r'([\d.]+)\s*-kpps')
+        found_pattern = re.compile(r'found=(\d+)')
+        buf = b""
 
         while self._running:
             try:
-                line = await stderr.readline()
-                if not line:
+                chunk = await stderr.read(4096)
+                if not chunk:
+                    if buf:
+                        self._parse_stderr_line(buf.decode(errors='ignore'), progress_pattern, hosts_pattern, rate_pattern, found_pattern)
                     break
 
-                line_str = line.decode(errors='ignore').strip()
-
-                # Log stderr lines for debugging
-                self.logger.debug(f"Masscan stderr: {line_str}")
-
-                # Parse percentage from stderr
-                match = percentage_pattern.search(line_str)
-                if match:
-                    self._scan_percentage = int(match.group(1))
-                    # Calculate scanned IPs from percentage
-                    if self._total_ips > 0:
-                        self._scanned_ips = int(self._total_ips * self._scan_percentage / 100)
-
-                # Also parse "Scanning XXX hosts..."
-                hosts_match = hosts_pattern.search(line_str)
-                if hosts_match:
-                    # Masscan reports current batch, update if larger
-                    reported = int(hosts_match.group(1))
-                    if reported > self._scanned_ips:
-                        self._scanned_ips = reported
-
-                # Parse rate to estimate progress
-                rate_match = rate_pattern.search(line_str)
-                if rate_match:
-                    self.logger.debug(f"Masscan rate: {rate_match.group(1)}/s")
+                buf += chunk
+                # Split on both \r and \n — masscan uses \r for in-place progress updates
+                while b"\r" in buf or b"\n" in buf:
+                    # Find the earliest delimiter
+                    cr = buf.find(b"\r")
+                    nl = buf.find(b"\n")
+                    if cr == -1:
+                        cr = len(buf) + 1
+                    if nl == -1:
+                        nl = len(buf) + 1
+                    split_at = min(cr, nl)
+                    line = buf[:split_at].decode(errors='ignore').strip()
+                    buf = buf[split_at + 1:]
+                    if line:
+                        self._parse_stderr_line(line, progress_pattern, hosts_pattern, rate_pattern, found_pattern)
 
             except Exception:
                 continue
+
+    def _parse_stderr_line(self, line: str, progress_pattern, hosts_pattern, rate_pattern, found_pattern) -> None:
+        self.logger.info(f"Masscan stderr: {line}")
+
+        match = progress_pattern.search(line)
+        if match:
+            pct = float(match.group(1))
+            self._scan_percentage = int(pct)
+            if self._total_ips > 0:
+                self._scanned_ips = int(self._total_ips * pct / 100)
+
+        hosts_match = hosts_pattern.search(line)
+        if hosts_match:
+            reported = int(hosts_match.group(1))
+            if reported > self._scanned_ips:
+                self._scanned_ips = reported
+
+        rate_match = rate_pattern.search(line)
+        if rate_match:
+            kpps = float(rate_match.group(1))
+            self.logger.debug(f"Masscan rate: {kpps:.1f} kpps")
+
+        found_match = found_pattern.search(line)
+        if found_match:
+            masscan_found = int(found_match.group(1))
+            # Only log periodically to avoid spam
+            self.logger.debug(f"Masscan found: {masscan_found}")
 
     async def _status_reporter(self) -> None:
         """Periodically report scan progress."""
@@ -228,18 +301,8 @@ class PortScanner(Scanner):
             rate = self._discovered / elapsed if elapsed > 0 else 0
             queue_size = self.output_queue.size()
 
-            # Estimate progress from scan rate
-            est_percentage = 0
-            est_scanned = 0
-            if self.config.scan_rate > 0 and self._total_ips > 0 and self._num_ports > 0:
-                total_packets = self._total_ips * self._num_ports
-                packets_sent = int(self.config.scan_rate * elapsed)
-                est_percentage = min(100, int(packets_sent / total_packets * 100))
-                est_scanned = int(self._total_ips * est_percentage / 100)
-
-            # Use the higher of stderr-reported and estimated
-            percentage = max(self._scan_percentage, est_percentage)
-            scanned = max(self._scanned_ips, est_scanned)
+            percentage = self._scan_percentage
+            scanned = self._scanned_ips
 
             progress = f"{scanned:,}" if self._total_ips == 0 else f"{scanned:,} / {self._total_ips:,}"
             hit_rate = (self._discovered / scanned * 100) if scanned > 0 else 0
@@ -305,7 +368,7 @@ class PortScanner(Scanner):
             except FileNotFoundError:
                 await asyncio.sleep(0.5)
 
-    async def stop(self) -> None:
+    async def stop(self, resume: bool = False) -> None:
         self._running = False
 
         # Signal completion so watcher can exit
@@ -313,9 +376,11 @@ class PortScanner(Scanner):
             self._masscan_done.set()
 
         # Terminate masscan subprocess
+        # SIGINT makes masscan write paused.conf; SIGTERM does not
         if self._proc and self._proc.returncode is None:
             try:
-                self._proc.terminate()
+                sig = signal.SIGINT if resume else signal.SIGTERM
+                self._proc.send_signal(sig)
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 self._proc.kill()

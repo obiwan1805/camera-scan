@@ -198,7 +198,7 @@ class Fingerprinter(Filter):
                 f"Rate: {rate:.1f}/s"
             )
 
-    async def stop(self) -> None:
+    async def stop(self, **kwargs) -> None:
         self._running = False
 
         timeout = 30

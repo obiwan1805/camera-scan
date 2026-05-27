@@ -68,10 +68,12 @@ class Pipeline:
                 else:
                     await layer.start()
 
-    async def stop(self) -> None:
+    async def stop(self, resume: bool = False) -> None:
         self._running = False
         for layer in self.layers:
             if hasattr(layer, "stop"):
+                await layer.stop(resume=resume)
+            elif hasattr(layer, "stop"):
                 await layer.stop()
         for queue in self.queues:
             queue.close()

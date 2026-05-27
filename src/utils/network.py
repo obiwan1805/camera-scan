@@ -37,3 +37,18 @@ def count_ips_in_cidr(cidr: str) -> int:
 
 def count_total_ips(cidr_list: list) -> int:
     return sum(count_ips_in_cidr(cidr) for cidr in cidr_list)
+
+def count_ips_in_range(spec: str) -> int:
+    """Count IPs in CIDR or IP range (e.g. '1.52.0.0-1.52.246.255')."""
+    if "/" in spec:
+        return count_ips_in_cidr(spec)
+    if "-" in spec:
+        parts = spec.split("-")
+        if len(parts) == 2:
+            try:
+                start = int(ipaddress.ip_address(parts[0].strip()))
+                end = int(ipaddress.ip_address(parts[1].strip()))
+                return max(0, end - start + 1)
+            except ValueError:
+                return 0
+    return count_ips_in_cidr(spec)
