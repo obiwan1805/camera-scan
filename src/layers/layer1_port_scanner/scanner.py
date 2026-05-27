@@ -267,7 +267,7 @@ class PortScanner(Scanner):
                 continue
 
     def _parse_stderr_line(self, line: str, progress_pattern, hosts_pattern, rate_pattern, found_pattern) -> None:
-        self.logger.info(f"Masscan stderr: {line}")
+        self.logger.debug(f"Masscan stderr: {line}")
 
         match = progress_pattern.search(line)
         if match:
