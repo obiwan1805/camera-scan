@@ -9,7 +9,11 @@ CIDR Input → Layer 1 (Port Scanner) → Queue1 → Layer 2 (Fingerprinter) →
 ```
 
 ## Setup
-
+Install masscan
+```bash
+sudo apt update
+sudo apt install masscan
+```
 ```bash
 pip install -r requirements.txt
 ```
@@ -17,7 +21,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python main.py
+sudo -E python3 main.py
 ```
 
 ## Configuration
