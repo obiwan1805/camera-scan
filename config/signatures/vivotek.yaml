@@ -1,0 +1,65 @@
+vendor: vivotek
+aliases: []
+
+favicon_hashes: []
+
+brand_keywords:
+  - pattern: "Vivotek"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "vivotek"
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - pattern: "VIVOTEK"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+
+  # Web plugin identifiers
+  - pattern: "VivotekActiveX"
+    scope: [html]
+    cves: []
+  - pattern: "VivotekPlugin"
+    scope: [html]
+    cves: []
+  - pattern: "iViewer"
+    scope: [html]
+    cves: []
+  - pattern: "classid=\"clsid:FC53D85A-CE54-4A88-A832-2C4CE640E62A\""
+    scope: [html]
+    cves: []
+  - pattern: "ST7701Web"
+    scope: [html]
+    cves: []
+
+model_patterns:
+  - regex: '\bFD\d{3,}[A-Za-z\d-]*\b'
+    scope: [xml_text, rtsp_banner, headers]
+    case_sensitive: true
+    cves: []
+  - regex: '\bIP\d{3,}[A-Za-z\d-]*\b'
+    scope: [xml_text, rtsp_banner, headers]
+    case_sensitive: true
+    cves: []
+  - regex: '\bFE\d{3,}[A-Za-z\d-]*\b'
+    scope: [xml_text, rtsp_banner, headers]
+    case_sensitive: true
+    cves: []
+  - regex: '\bIB\d{3,}[A-Za-z\d-]*\b'
+    scope: [xml_text, rtsp_banner, headers]
+    case_sensitive: true
+    cves: []
+  - regex: '\bND\d{3,}[A-Za-z\d-]*\b'
+    scope: [html, xml_text, rtsp_banner, headers]
+    case_sensitive: true
+    cves: []
+
+version_patterns: []
+
+endpoint_probes: []
+
+onvif_parsers: []
+
+rtsp_paths:
+  - "/live.sdp"
+
+extra_patterns: []

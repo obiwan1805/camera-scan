@@ -1,0 +1,50 @@
+vendor: ubiquiti
+aliases: [ubnt]
+
+favicon_hashes: []
+
+brand_keywords:
+  - pattern: "Ubiquiti"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "ubiquiti"
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - pattern: "UniFi"
+    scope: [html, headers]
+    cves: []
+  - pattern: "airVision"
+    scope: [html, headers]
+    cves: []
+  - pattern: "airCam"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+
+  # Web plugin identifiers
+  - pattern: "UniFi-Video"
+    scope: [html, headers]
+    cves: []
+  - pattern: "unifi-video"
+    scope: [html]
+    cves: []
+  - pattern: "airVisionPlugin"
+    scope: [html]
+    cves: []
+
+model_patterns:
+  - regex: 'UniFi'
+    scope: [html, xml_text, headers]
+    cves: []
+  - regex: 'airCam'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+
+version_patterns: []
+
+endpoint_probes: []
+
+onvif_parsers: []
+
+rtsp_paths: []
+
+extra_patterns: []

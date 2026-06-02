@@ -1,0 +1,246 @@
+vendor: hikvision
+aliases:
+- hik
+- hik-connect
+favicon_hashes:
+- 999357577
+brand_keywords:
+- pattern: hikvision
+  scope:
+  - html
+  - headers
+  - rtsp_banner
+- pattern: ivms
+  scope:
+  - html
+- pattern: hik-connect
+  scope:
+  - html
+- pattern: DVRDVS-Webs
+  scope:
+  - headers
+- pattern: App/WebServer/
+  scope:
+  - headers
+- pattern: HIKVISION
+  scope:
+  - headers
+- pattern: webserver
+  scope:
+  - headers
+- pattern: DVRDVS
+  scope:
+  - headers
+- pattern: Network Video Recorder
+  scope:
+  - html
+- pattern: Digital Video Recorder
+  scope:
+  - html
+- pattern: gb2312
+  scope:
+  - headers
+
+  # Web plugin identifiers
+- pattern: WebPlugin
+  scope:
+  - html
+- pattern: webplugin
+  scope:
+  - html
+- pattern: webPlugin3.0.5
+  scope:
+  - html
+- pattern: NetVideoActiveX
+  scope:
+  - html
+- pattern: classid="clsid:D6BF3208-3ED2-49D6-8821-5A74B1B86228"
+  scope:
+  - html
+- pattern: hik-video-plugin
+  scope:
+  - html
+- pattern: HikCentral
+  scope:
+  - html
+
+model_patterns:
+- regex: DS-2CD\d+[A-Za-z\d-]*
+  scope:
+  - html
+  - xml_text
+  - rtsp_banner
+- regex: DS-2TD\d+[A-Za-z\d-]*
+  scope:
+  - html
+  - xml_text
+  - rtsp_banner
+- regex: DS-2DE\d+[A-Za-z\d-]*
+  scope:
+  - html
+  - xml_text
+- regex: DS-2PT\d+[A-Za-z\d-]*
+  scope:
+  - html
+  - xml_text
+- regex: DS-2CF\d+[A-Za-z\d-]*
+  scope:
+  - html
+  - xml_text
+- regex: DS-2EF\d+[A-Za-z\d-]*
+  scope:
+  - html
+  - xml_text
+- regex: iVMS-\d+
+  scope:
+  - html
+- regex: <model>(.*?)</model>
+  scope:
+  - xml_text
+  group: 1
+- regex: <Model>(.*?)</Model>
+  scope:
+  - xml_text
+  group: 1
+- regex: <deviceModel>(.*?)</deviceModel>
+  scope:
+  - xml_text
+  group: 1
+- regex: <deviceName>(.*?)</deviceName>
+  scope:
+  - xml_text
+  group: 1
+
+  # Web plugin model extraction
+- regex: webPlugin[_\s]*(\d+[\d.]*)\.(exe|cab|dll|pkg)
+  scope:
+  - html
+  group: 1
+- regex: pluginVersion\s*[=:]\s*["']?([^"'\s<]+)
+  scope:
+  - html
+  group: 1
+- regex: ActiveXVersion\s*[=:]\s*["']?([^"'\s<]+)
+  scope:
+  - html
+  group: 1
+
+version_patterns:
+- regex: <firmwareVersion>(.*?)</firmwareVersion>
+  scope:
+  - xml_text
+  group: 1
+  normalize: prefix_v
+- regex: <FirmwareVersion>(.*?)</FirmwareVersion>
+  scope:
+  - xml_text
+  group: 1
+  normalize: prefix_v
+- regex: <softwareVersion>(.*?)</softwareVersion>
+  scope:
+  - xml_text
+  group: 1
+  normalize: prefix_v
+- regex: <SoftwareVersion>(.*?)</SoftwareVersion>
+  scope:
+  - xml_text
+  group: 1
+  normalize: prefix_v
+- regex: <version>(.*?)</version>
+  scope:
+  - xml_text
+  group: 1
+  normalize: prefix_v
+- regex: <Version>(.*?)</Version>
+  scope:
+  - xml_text
+  group: 1
+  normalize: prefix_v
+- regex: /common/css/main\.css\?v=(\d+\.\d+)
+  scope:
+  - html
+  group: 1
+- regex: /common/js/common\.js\?v=(\d+\.\d+)
+  scope:
+  - html
+  group: 1
+endpoint_probes:
+- path: /ISAPI/System/deviceInfo
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /ISAPI/System/firmwareInfo
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /ISAPI/System/serialNumber
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /ISAPI/Time/time
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /docu/page.xml
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /PSIA/System/deviceInfo
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /ISAPI/ContentMgmt/download
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /System/upgradeFirmware
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /ISAPI/Security/users/checkUser
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /version
+  protocol:
+  - http
+  - https
+  content_type: xml
+- path: /ISAPI/Streaming/channels
+  protocol:
+  - http
+  - https
+  content_type: xml
+
+  # Web plugin endpoints
+- path: /web_plugin
+  protocol:
+  - http
+  - https
+  content_type: html
+- path: /docu/webPlugin.html
+  protocol:
+  - http
+  - https
+  content_type: html
+- path: /web_plugin/download
+  protocol:
+  - http
+  - https
+  content_type: binary
+onvif_parsers:
+- manufacturer_match:
+  - hikvision
+  - hik
+rtsp_paths:
+- /h264/ch1/main/av_stream
+- /ISAPI/Streaming/channels

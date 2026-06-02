@@ -1,4 +1,4 @@
-"""Main fingerprinter implementing Filter interface with semaphore-based processing."""
+"""Main fingerprinter -- orchestrates collect/match/resolve pipeline."""
 import asyncio
 from typing import Optional
 from src.core.interfaces import Filter
@@ -6,7 +6,13 @@ from src.core.queue_protocol import QueueProtocol
 from src.storage.base import StorageBackend
 from src.storage.schemas import CameraFingerprint, Fingerprint, RawResponse
 from src.core.config import Layer2Config
-from src.layers.layer2_fingerprinter.modules import MODULE_REGISTRY
+from src.layers.layer2_fingerprinter.signatures.loader import SignatureLoader
+from src.layers.layer2_fingerprinter.engine import SignatureEngine
+from src.layers.layer2_fingerprinter.resolver import AggregationResolver
+from src.layers.layer2_fingerprinter.probers import (
+    HTTPProber, HTTPSProber, RTSPProber, ONVIFProber, FaviconProber,
+)
+from src.layers.layer2_fingerprinter.probers.types import CollectedData
 from src.utils.logging import setup_logger
 
 
@@ -23,12 +29,29 @@ class Fingerprinter(Filter):
         self.output_queue = output_queue
         self.storage = storage
         self.logger = setup_logger("Fingerprinter")
-        self.modules = [MODULE_REGISTRY[name]() for name in config.modules]
         self._max_concurrent = config.worker_pool.max_concurrent or 200
         self._semaphore = asyncio.Semaphore(self._max_concurrent)
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._status_task: Optional[asyncio.Task] = None
+
+        # Load signatures and build engine
+        sig_dir = getattr(config, 'signatures_dir', 'config/signatures')
+        self._loader = SignatureLoader(sig_dir)
+        self._engine = SignatureEngine(self._loader.signatures)
+        self._resolver = AggregationResolver()
+
+        # Build probers with signature-driven endpoints
+        endpoints = self._loader.get_unique_endpoint_paths()
+        rtsp_paths = self._loader.get_all_rtsp_paths()
+
+        self._probers = [
+            HTTPProber(endpoint_paths=endpoints),
+            HTTPSProber(endpoint_paths=endpoints),
+            RTSPProber(extra_paths=rtsp_paths),
+            ONVIFProber(),
+            FaviconProber(),
+        ]
 
         # Progress counters
         self._processed = 0
@@ -37,13 +60,15 @@ class Fingerprinter(Filter):
         self._skipped = 0
         self._start_time = None
         self._processing_count = 0
+        self._reload_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         self._running = True
         self._start_time = asyncio.get_event_loop().time()
         self._task = asyncio.create_task(self._run())
         self._status_task = asyncio.create_task(self._status_reporter())
-        self.logger.info(f"Fingerprinter started (max_concurrent={self._max_concurrent})")
+        self._reload_task = asyncio.create_task(self._sig_watcher())
+        self.logger.info(f"Fingerprinter started (max_concurrent={self._max_concurrent}, signatures={len(self._loader.signatures)})")
 
     async def _run(self) -> None:
         """Process items continuously, bounded by semaphore."""
@@ -83,8 +108,12 @@ class Fingerprinter(Filter):
                         await self.input_queue.ack(item)
                     self._successful += 1
                     fp = result.fingerprint
-                    evidence = f" [{fp.probe_method}]" if fp.probe_method else ""
-                    self.logger.info(f"✓ {result.ip}:{result.port} - {fp.vendor or 'Unknown'} - {fp.model or ''}{evidence}")
+                    cves = f" cves={fp.cves}" if fp.cves else ""
+                    self.logger.info(
+                        f"[OK] {result.ip}:{result.port} - "
+                        f"{fp.vendor or 'Unknown'} - {fp.model or ''} "
+                        f"{fp.version or ''}{cves}"
+                    )
                 else:
                     if hasattr(self.input_queue, 'mark_failed'):
                         await self.input_queue.mark_failed(item)
@@ -123,62 +152,20 @@ class Fingerprinter(Filter):
             return None
 
     async def _fingerprint(self, ip: str, port: int) -> tuple[Optional[Fingerprint], list[RawResponse]]:
-        """Returns (fingerprint_or_none, collected_raw_responses)."""
-        all_raw: list[RawResponse] = []
+        """Three-phase pipeline: collect -> match -> resolve."""
+        # Phase 1: Collect raw data via all applicable probers
+        collected = CollectedData(ip=ip, port=port)
+        for prober in self._probers:
+            if port in prober.supported_ports():
+                collected = await prober.probe(ip, port, collected)
 
-        fp, raw = await self._optimistic_route(ip, port)
-        all_raw.extend(raw)
-        if fp:
-            return fp, all_raw
+        # Phase 2: Run ALL signatures against collected data
+        matches = self._engine.match(collected)
 
-        fp, raw = await self._sniffer_route(ip, port)
-        all_raw.extend(raw)
-        if fp:
-            return fp, all_raw
+        # Phase 3: Aggregate matches into best fingerprint
+        fp = self._resolver.resolve(matches)
 
-        return None, all_raw
-
-    async def _optimistic_route(self, ip: str, port: int) -> tuple[Optional[Fingerprint], list[RawResponse]]:
-        """Try each module. Returns (fingerprint_or_none, collected_raw_responses)."""
-        vendor_hint = None
-        all_raw: list[RawResponse] = []
-        for module in self.modules:
-            if port in module.supported_ports():
-                result = await module.probe(ip, port, vendor_hint)
-                if result:
-                    all_raw.extend(result.raw_responses)
-                    if result.fingerprint:
-                        if result.fingerprint.vendor:
-                            vendor_hint = result.fingerprint.vendor
-                        return result.fingerprint, all_raw
-        return None, all_raw
-
-    async def _sniffer_route(self, ip: str, port: int) -> tuple[Optional[Fingerprint], list[RawResponse]]:
-        try:
-            banner = await asyncio.wait_for(
-                self._read_banner(ip, port),
-                timeout=2
-            )
-            if banner:
-                raw = RawResponse(
-                    ip=ip, port=port, module="banner", endpoint="/",
-                    raw_data=banner
-                )
-                return Fingerprint(
-                    vendor="unknown",
-                    raw_banner=banner[:256].decode(errors="ignore"),
-                    services=["unknown"]
-                ), [raw]
-        except Exception:
-            pass
-        return None, []
-
-    async def _read_banner(self, ip: str, port: int) -> bytes:
-        reader, writer = await asyncio.open_connection(ip, port, limit=256)
-        banner = await reader.read(256)
-        writer.close()
-        await writer.wait_closed()
-        return banner
+        return fp, collected.raw_responses
 
     async def _status_reporter(self) -> None:
         """Periodically report progress."""
@@ -198,6 +185,46 @@ class Fingerprinter(Filter):
                 f"Rate: {rate:.1f}/s"
             )
 
+    async def _sig_watcher(self) -> None:
+        """Periodically check for signature file changes and hot-reload."""
+        while self._running:
+            await asyncio.sleep(30)
+            try:
+                await self.reload_signatures()
+            except Exception as e:
+                self.logger.error(f"Signature hot-reload failed: {e}")
+
+    async def reload_signatures(self) -> bool:
+        """Reload signatures from disk and swap engine atomically.
+
+        Called automatically every 30s by _sig_watcher, or manually via
+        bot /signature reload. Returns True if signatures changed.
+        """
+        old_count = len(self._loader.signatures)
+        old_hashes = self._sig_file_hashes()
+
+        before, after = self._loader.reload()
+        new_hashes = self._sig_file_hashes()
+
+        if new_hashes == old_hashes:
+            return False
+
+        # Swap engine -- new targets get the new signatures immediately
+        self._engine = SignatureEngine(self._loader.signatures)
+        self.logger.info(
+            f"Signatures hot-reloaded: {old_count} -> {len(self._loader.signatures)} vendors"
+        )
+        return True
+
+    def _sig_file_hashes(self) -> dict:
+        """MTimes of all signature YAML files for change detection."""
+        result = {}
+        sig_dir = self._loader._dir
+        if sig_dir.exists():
+            for f in sorted(sig_dir.glob("*.yaml")):
+                result[f.name] = f.stat().st_mtime
+        return result
+
     async def stop(self, **kwargs) -> None:
         self._running = False
 
@@ -210,6 +237,13 @@ class Fingerprinter(Filter):
             self._status_task.cancel()
             try:
                 await self._status_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._reload_task:
+            self._reload_task.cancel()
+            try:
+                await self._reload_task
             except asyncio.CancelledError:
                 pass
 

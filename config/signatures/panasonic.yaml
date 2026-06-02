@@ -1,0 +1,54 @@
+vendor: panasonic
+aliases: []
+
+favicon_hashes: []
+
+brand_keywords:
+  - pattern: "Panasonic"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "panasonic"
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - pattern: "WV-"
+    scope: [html, rtsp_banner]
+    cves: []
+  - pattern: "BB-"
+    scope: [html, rtsp_banner]
+    cves: []
+  - pattern: "KX-"
+    scope: [html, rtsp_banner]
+    cves: []
+
+  # Web plugin identifiers
+  - pattern: "PanasonicPlugin"
+    scope: [html]
+    cves: []
+  - pattern: "NetworkCameraActiveX"
+    scope: [html]
+    cves: []
+  - pattern: "WJ-"
+    scope: [html]
+    cves: []
+
+model_patterns:
+  - regex: 'WV-\w+'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - regex: 'KX-\w+'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - regex: 'BB-\w+'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+
+version_patterns: []
+
+endpoint_probes: []
+
+onvif_parsers: []
+
+rtsp_paths:
+  - "/nphMpegVideo/g726"
+
+extra_patterns: []

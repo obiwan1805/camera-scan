@@ -5,6 +5,15 @@ from typing import ClassVar, Optional, List
 from pydantic import BaseModel, Field
 
 
+class EvidenceItem(BaseModel):
+    """A single match from the signature engine."""
+    field: str           # "vendor", "model", "version"
+    value: str
+    source: str          # "favicon_hash", "headers", "xml_text", etc.
+    pattern: str
+    cves: List[str] = []
+
+
 class PortScanResult(BaseModel):
     """Result from Layer 1 (Port Scanner)."""
     ip: str
@@ -20,11 +29,21 @@ class Fingerprint(BaseModel):
     version: Optional[str] = None
     raw_banner: Optional[str] = None
     services: List[str] = []
-    # New fields for evidence
-    probe_method: Optional[str] = None  # e.g., "http_server_header", "xml_endpoint", "rtsp_describe"
-    evidence: Optional[str] = None      # e.g., "matched Server header: DVRDVS-Webs"
-    matched_pattern: Optional[str] = None  # The regex or pattern that matched
-    endpoint: Optional[str] = None      # e.g., "/ISAPI/System/deviceInfo"
+    probe_method: Optional[str] = None
+    endpoint: Optional[str] = None
+    evidence_items: List[EvidenceItem] = []
+    cves: List[str] = []
+
+    @property
+    def evidence(self) -> Optional[str]:
+        return "; ".join(
+            f"{e.field}={e.value} via {e.source}"
+            for e in self.evidence_items
+        ) or None
+
+    @property
+    def matched_pattern(self) -> Optional[str]:
+        return "; ".join(e.pattern for e in self.evidence_items) or None
 
 
 class CameraFingerprint(BaseModel):
@@ -55,7 +74,7 @@ class RawResponse(BaseModel):
 
 @dataclass
 class ProbeResult:
-    """Return type for module probe() — fingerprint + collected raw responses."""
+    """Return type for module probe() -- fingerprint + collected raw responses."""
     fingerprint: Optional[Fingerprint] = None
     raw_responses: List[RawResponse] = field(default_factory=list)
 

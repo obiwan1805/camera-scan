@@ -17,6 +17,7 @@ layers:
       - rtsp
       - onvif
     router_strategy: optimistic
+    signatures_dir: config/signatures
 
 storage:
   backend: sqlite

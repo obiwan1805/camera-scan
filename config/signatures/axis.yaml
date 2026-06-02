@@ -1,0 +1,69 @@
+vendor: axis
+aliases: [axis communications]
+
+favicon_hashes: []
+
+brand_keywords:
+  - pattern: "Axis"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "axis"
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - pattern: "AXIS"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "Axis Communications"
+    scope: [html, headers]
+    cves: []
+
+  # Web plugin identifiers
+  - pattern: "AXIS Media Control"
+    scope: [html]
+    cves: []
+  - pattern: "AxMediaControl"
+    scope: [html]
+    cves: []
+  - pattern: "classid=\"clsid:5172C2A1-09E4-4E27-88A3-AD6F82E3E7C3\""
+    scope: [html]
+    cves: []
+  - pattern: "axis-media-control"
+    scope: [html]
+    cves: []
+  - pattern: "AXIS Streaming Agent"
+    scope: [html, headers]
+    cves: []
+
+model_patterns:
+  - regex: 'AXIS [A-Z]?\d+[A-Za-z\d-]*'
+    scope: [html, xml_text, rtsp_banner, headers]
+    cves: []
+  - regex: '\b(Q\d{3,}[A-Za-z\d-]*)'
+    scope: [xml_text, rtsp_banner, headers]
+    cves: []
+  - regex: '\b(P\d{3,}[A-Za-z\d-]*)'
+    scope: [xml_text, rtsp_banner, headers]
+    cves: []
+  - regex: '\b(M\d{3,}[A-Za-z\d-]*)'
+    scope: [xml_text, rtsp_banner, headers]
+    cves: []
+
+version_patterns: []
+
+endpoint_probes:
+  - path: "/axis-cgi/mjpg/video.cgi"
+    protocol: [http, https]
+    content_type: html
+  - path: "/axis-cgi/media/amidecoder.dll"
+    protocol: [http, https]
+    content_type: binary
+
+onvif_parsers:
+  - manufacturer_match: [axis, axis communications]
+    model_tag: "tds:Model"
+    firmware_tag: "tds:FirmwareVersion"
+
+rtsp_paths:
+  - "/axis-media/media.amp"
+
+extra_patterns: []

@@ -1,0 +1,42 @@
+vendor: sony
+aliases: []
+
+favicon_hashes: []
+
+brand_keywords:
+  - pattern: "Sony Network Camera"
+    scope: [html, headers]
+    cves: []
+  - pattern: "Sony Visual"
+    scope: [html, headers]
+    cves: []
+  - pattern: "SNC-"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+
+  # Web plugin identifiers
+  - pattern: "SonyRealshot"
+    scope: [html]
+    cves: []
+  - pattern: "SNCPlugin"
+    scope: [html]
+    cves: []
+  - pattern: "Realshot Manager"
+    scope: [html]
+    cves: []
+
+model_patterns:
+  - regex: 'SNC-\w+'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+
+version_patterns: []
+
+endpoint_probes: []
+
+onvif_parsers: []
+
+rtsp_paths:
+  - "/media/video1"
+
+extra_patterns: []

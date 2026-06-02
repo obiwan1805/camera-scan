@@ -1,0 +1,222 @@
+vendor: dahua
+aliases: [dh, dahuatech]
+
+favicon_hashes:
+  - -1466785234
+  - 2019488876
+  - 1653394551
+
+brand_keywords:
+  - pattern: "dahua"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "DahuaWEB"
+    scope: [headers]
+    cves: []
+  - pattern: "DVR WEB CLIENT"
+    scope: [headers, rtsp_banner]
+    cves: []
+  - pattern: "DahuaTech"
+    scope: [rtsp_banner]
+    cves: []
+  - pattern: "dmss"
+    scope: [html]
+    cves: []
+  - pattern: "smartpss"
+    scope: [html]
+    cves: []
+
+  # Web plugin identifiers
+  - pattern: "NetVideoActiveX"
+    scope: [html]
+    cves: []
+  - pattern: "dhWebControl"
+    scope: [html]
+    cves: []
+  - pattern: "DahuaActiveX"
+    scope: [html]
+    cves: []
+  - pattern: "DahuaPlugin"
+    scope: [html]
+    cves: []
+  - pattern: "classid=\"clsid:727BEDD3-2B1F-4028-A4A1-D9B093376BC0\""
+    scope: [html]
+    cves: []
+  - pattern: "NetSurveillance"
+    scope: [html, headers]
+    cves: []
+  - pattern: "webplugin"
+    scope: [html]
+    cves: []
+  - pattern: "WEB SERVICE"
+    scope: [html]
+    cves: []
+  - pattern: "rpcCore"
+    scope: [html]
+    cves: []
+  - pattern: "pluginVersion.js"
+    scope: [html]
+    cves: []
+
+model_patterns:
+  - regex: 'IPC-HFW\d+[A-Za-z\d-]*'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - regex: 'IPC-HDBW\d+[A-Za-z\d-]*'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - regex: 'IPC-HDW\d+[A-Za-z\d-]*'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - regex: 'IPC-HDB\d+[A-Za-z\d-]*'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - regex: '\bSD\d{4,}[A-Za-z\d-]*\b'
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - regex: 'NVR\d+[A-Za-z\d-]*'
+    scope: [html, xml_text]
+    cves: []
+  - regex: 'XVR\d+[A-Za-z\d-]*'
+    scope: [html, xml_text]
+    cves: []
+  - regex: 'HCVR\d+[A-Za-z\d-]*'
+    scope: [html, xml_text]
+    cves: []
+  - regex: 'DH-IPC-[A-Za-z\d-]+'
+    scope: [html, xml_text]
+    cves: []
+  - regex: 'DH-NVR-[A-Za-z\d-]+'
+    scope: [html, xml_text]
+    cves: []
+  - regex: '<string>(IPC-HFW\d+[A-Za-z\d-]*)</string>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '<string>(IPC-HDBW\d+[A-Za-z\d-]*)</string>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '<string>(IPC-HDW\d+[A-Za-z\d-]*)</string>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '<string>(SD\d+[A-Za-z\d-]*)</string>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '<string>(NVR\d+[A-Za-z\d-]*)</string>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '<string>(XVR\d+[A-Za-z\d-]*)</string>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '<model>([^<]+)</model>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '"model"\s*:\s*"([^"]+)"'
+    scope: [json_text]
+    group: 1
+    cves: []
+  - regex: '"deviceModel"\s*:\s*"([^"]+)"'
+    scope: [json_text]
+    group: 1
+    cves: []
+
+  # Web plugin model extraction
+  - regex: 'pluginVersion\s*[=:]\s*[^\w]?([\w.]+)'
+    scope: [html]
+    group: 1
+    cves: []
+  - regex: 'NetVideoActiveX\.Cab#version=([\d.]+)'
+    scope: [html]
+    group: 1
+    cves: []
+
+version_patterns:
+  - regex: '<string>(V\d+\.\d+\.\d+[^<]*)</string>'
+    scope: [xml_text]
+    group: 1
+    cves: []
+  - regex: '<firmwareVersion>([^<]+)</firmwareVersion>'
+    scope: [xml_text]
+    group: 1
+    normalize: prefix_v
+    cves: []
+  - regex: '<FirmwareVersion>([^<]+)</FirmwareVersion>'
+    scope: [xml_text]
+    group: 1
+    normalize: prefix_v
+    cves: []
+  - regex: '<softwareVersion>([^<]+)</softwareVersion>'
+    scope: [xml_text]
+    group: 1
+    normalize: prefix_v
+    cves: []
+  - regex: '"firmwareVersion"\s*:\s*"([^"]+)"'
+    scope: [json_text]
+    group: 1
+    normalize: prefix_v
+    cves: []
+  - regex: '"version"\s*:\s*"([^"]+)"'
+    scope: [json_text]
+    group: 1
+    normalize: prefix_v
+    cves: []
+
+endpoint_probes:
+  - path: "/RPC2_Login"
+    protocol: [http, https]
+    content_type: xml
+  - path: "/RPC2"
+    protocol: [http, https]
+    content_type: xml
+  - path: "/RPC2_Login?action=login"
+    protocol: [http, https]
+    content_type: xml
+  - path: "/cgi-bin/configManager.cgi?action=getConfig&name=SystemInfo"
+    protocol: [http, https]
+    content_type: text
+  - path: "/cgi-bin/configManager.cgi?action=getConfig&name=NetWork.Common"
+    protocol: [http, https]
+    content_type: text
+  - path: "/cgi-bin/configManager.cgi?action=getConfig&name=System.General"
+    protocol: [http, https]
+    content_type: text
+  - path: "/cgi-bin/magicBox.cgi?action=getSystemInfo"
+    protocol: [http, https]
+    content_type: text
+  - path: "/cgi-bin/magicBox.cgi?action=getSystemInfo&date=0"
+    protocol: [http, https]
+    content_type: text
+  - path: "/config/system"
+    protocol: [http, https]
+    content_type: json
+  - path: "/RPC2_Login?action=getSystemInfo"
+    protocol: [http, https]
+    content_type: xml
+  - path: "/cgi-bin/configManager.cgi?action=getConfig&name=System.SerialNumber"
+    protocol: [http, https]
+    content_type: text
+
+  # Web plugin endpoints
+  - path: "/webplugin"
+    protocol: [http, https]
+    content_type: html
+  - path: "/plugin/download"
+    protocol: [http, https]
+    content_type: binary
+
+onvif_parsers:
+  - manufacturer_match: [dahua, dahuatech]
+    model_tag: "tds:Model"
+    firmware_tag: "tds:FirmwareVersion"
+
+rtsp_paths:
+  - "/cam/realmonitor"
+  - "/cam/realmonitor?channel=1&subtype=0"
+
+extra_patterns: []

@@ -1,0 +1,57 @@
+vendor: _generic
+aliases: []
+
+# Generic version patterns not tied to any vendor
+version_patterns:
+  - regex: 'V\d+\.\d+\.\d+[\w.-]*'
+    scope: [html, xml_text, rtsp_banner]
+    normalize: clean_v
+    cves: []
+  - regex: 'v\d+\.\d+\.\d+[\w.-]*'
+    scope: [html, xml_text, rtsp_banner]
+    normalize: clean_v
+    cves: []
+  - regex: 'Firmware[\s:]+([vV]?\d+\.\d+)'
+    scope: [html]
+    group: 1
+    cves: []
+  - regex: 'Version[\s:]+([vV]?\d+\.\d+)'
+    scope: [html]
+    group: 1
+    cves: []
+  - regex: 'FW[\s:]+([vV]?\d+\.\d+)'
+    scope: [html]
+    group: 1
+    cves: []
+  - regex: 'var firmware["\s]*=["\x27]([^"\x27]+)["\x27]'
+    scope: [html]
+    group: 1
+    cves: []
+  - regex: 'var version["\s]*=["\x27]([^"\x27]+)["\x27]'
+    scope: [html]
+    group: 1
+    cves: []
+
+# Generic RTSP paths to try on any device
+rtsp_paths:
+  - "/stream1"
+  - "/stream2"
+  - "/live"
+  - "/h264"
+  - "/"
+
+# Generic endpoint probes
+endpoint_probes:
+  - path: "/"
+    protocol: [http, https]
+    content_type: html
+  - path: "/favicon.ico"
+    protocol: [http, https]
+    content_type: binary
+
+brand_keywords: []
+
+model_patterns: []
+favicon_hashes: []
+onvif_parsers: []
+extra_patterns: []

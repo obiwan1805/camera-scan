@@ -26,6 +26,7 @@ class Layer2Config:
     worker_pool: WorkerPoolConfig
     modules: List[str]
     router_strategy: str = "optimistic"
+    signatures_dir: str = "config/signatures"
 
 
 @dataclass
@@ -57,7 +58,8 @@ class Config:
             layer2=Layer2Config(
                 worker_pool=WorkerPoolConfig(**data.get("layers", {}).get("layer2", {}).get("worker_pool", {})),
                 modules=data.get("layers", {}).get("layer2", {}).get("modules", []),
-                router_strategy=data.get("layers", {}).get("layer2", {}).get("router_strategy", "optimistic")
+                router_strategy=data.get("layers", {}).get("layer2", {}).get("router_strategy", "optimistic"),
+                signatures_dir=data.get("layers", {}).get("layer2", {}).get("signatures_dir", "config/signatures")
             ),
             storage=StorageConfig(**data.get("storage", {})),
             queue=QueueConfig(**data.get("queue", {}))

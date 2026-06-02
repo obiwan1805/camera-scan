@@ -1,0 +1,49 @@
+vendor: mobotix
+aliases: []
+
+favicon_hashes: []
+
+brand_keywords:
+  - pattern: "Mobotix"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "mobotix"
+    scope: [html, xml_text, rtsp_banner]
+    cves: []
+  - pattern: "MOBOTIX"
+    scope: [html, headers, rtsp_banner]
+    cves: []
+  - pattern: "mxegg"
+    scope: [html, headers]
+    cves: []
+
+  # Web plugin identifiers
+  - pattern: "MxWeb"
+    scope: [html]
+    cves: []
+  - pattern: "MxPEG ActiveX"
+    scope: [html]
+    cves: []
+  - pattern: "mxpeg"
+    scope: [html]
+    cves: []
+
+model_patterns:
+  - regex: '\bM\d{2,}[A-Za-z\d-]*\b'
+    scope: [xml_text, rtsp_banner, headers]
+    cves: []
+  - regex: '\bMOBOTIX (M\d{2,}[A-Za-z\d-]*)\b'
+    scope: [html]
+    group: 1
+    cves: []
+
+version_patterns: []
+
+endpoint_probes: []
+
+onvif_parsers: []
+
+rtsp_paths:
+  - "/cgi-bin/faststream.jpg"
+
+extra_patterns: []
