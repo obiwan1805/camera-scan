@@ -11,7 +11,12 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.layers.layer2_fingerprinter.modules import MODULE_REGISTRY
+from src.layers.layer2_fingerprinter.signatures.loader import SignatureLoader
+from src.layers.layer2_fingerprinter.engine import SignatureEngine
+from src.layers.layer2_fingerprinter.resolver import AggregationResolver
+from src.layers.layer2_fingerprinter.probers import (
+    HTTPProber, HTTPSProber, RTSPProber, ONVIFProber, FaviconProber, CollectedData,
+)
 from src.storage.schemas import Fingerprint
 from src.storage.sqlite_backend import SQLiteBackend
 from src.utils.logging import setup_logger
@@ -26,11 +31,9 @@ class Layer2Tester:
     async def run_test(
         self,
         targets_file: str,
-        modules: Optional[List[str]] = None,
         output_file: str = "data/test_results.json"
     ):
         """Run test against IP:port pairs from file."""
-        # Load targets
         targets = self._load_targets(targets_file)
         self.logger.info(f"Loaded {len(targets)} targets from {targets_file}")
 
@@ -38,18 +41,28 @@ class Layer2Tester:
             self.logger.warning("No targets loaded")
             return
 
-        # Select modules
-        if modules:
-            self.modules = [MODULE_REGISTRY[name]() for name in modules]
-            self.logger.info(f"Testing modules: {modules}")
-        else:
-            self.modules = [MODULE_REGISTRY[name]() for name in MODULE_REGISTRY]
-            self.logger.info(f"Testing all modules: {[m.__class__.__name__ for m in self.modules]}")
+        # Load signatures
+        loader = SignatureLoader("config/signatures")
+        engine = SignatureEngine(loader.signatures)
+        resolver = AggregationResolver()
+
+        self.logger.info(f"Loaded {len(loader.signatures)} vendor signatures")
+
+        # Build probers
+        endpoints = loader.get_unique_endpoint_paths()
+        rtsp_paths = loader.get_all_rtsp_paths()
+
+        self._probers = [
+            HTTPProber(endpoint_paths=endpoints),
+            HTTPSProber(endpoint_paths=endpoints),
+            RTSPProber(extra_paths=rtsp_paths),
+            ONVIFProber(),
+            FaviconProber(),
+        ]
 
         # Initialize storage
         storage = SQLiteBackend("data/test_results.db")
         await storage.connect()
-        await self._create_tables(storage)
 
         # Run tests
         self.logger.info(f"Starting tests (max_concurrent={self.max_concurrent})")
@@ -60,19 +73,16 @@ class Layer2Tester:
         self._failed = 0
         self._results = []
 
-        # Create tasks for all targets
         tasks = []
         for target in targets:
-            task = asyncio.create_task(self._test_target(target))
+            task = asyncio.create_task(self._test_target(target, engine, resolver))
             tasks.append(task)
 
-        # Wait for all tasks to complete
         await asyncio.gather(*tasks, return_exceptions=True)
 
         # Save results
         self._save_results(output_file)
 
-        # Final stats
         elapsed = asyncio.get_event_loop().time() - self._start_time
         rate = self._processed / elapsed if elapsed > 0 else 0
 
@@ -84,12 +94,10 @@ class Layer2Tester:
         self.logger.info(f"Failed: {self._failed} ({self._failed/self._processed*100:.1f}%)")
         self.logger.info(f"Rate: {rate:.1f}/s")
         self.logger.info(f"Time: {elapsed:.1f}s")
-        self.logger.info(f"Results saved to: {output_file}")
 
         await storage.disconnect()
 
-    async def _load_targets(self, targets_file: str) -> List[Tuple[str, int]]:
-        """Load IP:port pairs from file."""
+    def _load_targets(self, targets_file: str) -> List[Tuple[str, int]]:
         targets = []
         try:
             with open(targets_file) as f:
@@ -97,8 +105,6 @@ class Layer2Tester:
                     line = line.strip()
                     if not line or line.startswith("#"):
                         continue
-
-                    # Parse "IP:PORT" format
                     if ":" in line:
                         parts = line.split(":")
                         ip = parts[0].strip()
@@ -108,62 +114,65 @@ class Layer2Tester:
                         self.logger.warning(f"Invalid format (expected IP:PORT): {line}")
         except FileNotFoundError:
             self.logger.error(f"File not found: {targets_file}")
-        except Exception as e:
-            self.logger.error(f"Error loading targets: {e}")
-
         return targets
 
-    async def _test_target(self, target: Tuple[str, int]) -> None:
-        """Test a single IP:port against all modules."""
+    async def _test_target(
+        self, target: Tuple[str, int],
+        engine: SignatureEngine,
+        resolver: AggregationResolver
+    ) -> None:
         ip, port = target
 
         async with self.semaphore:
-            result = await self._fingerprint(ip, port)
+            # Phase 1: Collect
+            collected = CollectedData(ip=ip, port=port)
+            for prober in self._probers:
+                if port in prober.supported_ports():
+                    collected = await prober.probe(ip, port, collected)
 
-            if result:
+            # Phase 2: Match
+            matches = engine.match(collected)
+
+            # Phase 3: Resolve
+            fp = resolver.resolve(matches)
+
+            if fp:
                 self._successful += 1
                 self._results.append({
                     "ip": ip,
                     "port": port,
-                    "vendor": result.vendor,
-                    "model": result.model,
-                    "version": result.version,
-                    "services": result.services,
-                    "raw_banner": result.raw_banner,
-                    "probe_method": result.probe_method,
-                    "evidence": result.evidence,
-                    "matched_pattern": result.matched_pattern,
-                    "endpoint": result.endpoint
+                    "vendor": fp.vendor,
+                    "model": fp.model,
+                    "version": fp.version,
+                    "cves": fp.cves,
+                    "services": fp.services,
+                    "evidence_items": [
+                        {
+                            "field": e.field,
+                            "value": e.value,
+                            "source": e.source,
+                            "pattern": e.pattern,
+                            "cves": e.cves,
+                        }
+                        for e in fp.evidence_items
+                    ],
                 })
-                self.logger.info(f"✓ {ip}:{port} - {result.vendor or 'Unknown'} - {result.model or ''} - {result.version or ''} [{result.probe_method or 'N/A'}]")
+                cves_str = f" cves={fp.cves}" if fp.cves else ""
+                self.logger.info(
+                    f"[OK] {ip}:{port} - {fp.vendor or 'Unknown'} - "
+                    f"{fp.model or ''} {fp.version or ''}{cves_str} "
+                    f"({len(fp.evidence_items)} signals)"
+                )
             else:
                 self._failed += 1
-                self._debug_info(ip, port)
 
             self._processed += 1
-
             if self._processed % 100 == 0:
                 self._print_progress()
 
-    async def _fingerprint(self, ip: str, port: int) -> Optional[Fingerprint]:
-        """Fingerprint an IP:port against all modules."""
-        for module in self.modules:
-            if port in module.supported_ports():
-                result = await module.probe(ip, port)
-                if result:
-                    return result
-        return None
-
-    def _debug_info(self, ip: str, port: int):
-        """Log debug info for failed probe."""
-        # Could add more detailed logging here
-        pass
-
     def _print_progress(self):
-        """Print progress periodically."""
         elapsed = asyncio.get_event_loop().time() - self._start_time
         rate = self._processed / elapsed if elapsed > 0 else 0
-
         self.logger.info(
             f"[Progress] {self._processed} processed | "
             f"{self._successful} success | "
@@ -171,13 +180,7 @@ class Layer2Tester:
             f"{rate:.1f}/s"
         )
 
-    async def _create_tables(self, storage: SQLiteBackend):
-        """Create test results table."""
-        # Tables already created by SQLiteBackend
-        pass
-
     def _save_results(self, output_file: str):
-        """Save results to JSON file."""
         output_path = Path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -192,14 +195,9 @@ class Layer2Tester:
         with open(output_path, "w") as f:
             json.dump(results, f, indent=2)
 
-        self.logger.info(f"Results saved to {output_file}")
-
-        # Also print summary
         self._print_summary()
 
     def _print_summary(self):
-        """Print summary of results."""
-        # Count by vendor
         vendors = {}
         for result in self._results:
             vendor = result.get("vendor", "unknown")
@@ -209,12 +207,16 @@ class Layer2Tester:
         for vendor, count in sorted(vendors.items(), key=lambda x: x[1], reverse=True):
             self.logger.info(f"  {vendor}: {count}")
 
-        # Show successful results
         if self._successful > 0:
             self.logger.info("\nSuccessful identifications:")
-            for result in self._results[:20]:  # Show first 20
-                evidence_note = f"\n    Evidence: {result.get('evidence', 'N/A')}" if result.get('evidence') else ""
-                self.logger.info(f"  {result['ip']}:{result['port']} - {result['vendor']} - {result['model']} - {result['version']}{evidence_note}")
+            for result in self._results[:20]:
+                cves_str = f" cves={result.get('cves', [])}" if result.get('cves') else ""
+                signals = len(result.get('evidence_items', []))
+                self.logger.info(
+                    f"  {result['ip']}:{result['port']} - "
+                    f"{result['vendor']} - {result['model']} - "
+                    f"{result['version']}{cves_str} ({signals} signals)"
+                )
             if len(self._results) > 20:
                 self.logger.info(f"  ... and {len(self._results) - 20} more")
 
@@ -222,7 +224,6 @@ class Layer2Tester:
 async def main():
     parser = argparse.ArgumentParser(description="Layer 2 Test Mode")
     parser.add_argument("targets_file", help="File containing IP:PORT pairs (one per line)")
-    parser.add_argument("--modules", nargs="+", help="Modules to test (default: all)")
     parser.add_argument("--output", default="data/test_results.json", help="Output JSON file")
     parser.add_argument("--max-concurrent", type=int, default=50, help="Max concurrent requests")
 
@@ -231,7 +232,6 @@ async def main():
     tester = Layer2Tester(max_concurrent=args.max_concurrent)
     await tester.run_test(
         targets_file=args.targets_file,
-        modules=args.modules,
         output_file=args.output
     )
 
