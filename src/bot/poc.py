@@ -1,4 +1,4 @@
-"""PoC command group — /poc add|remove|list|show."""
+"""PoC command group — /poc add|remove|list|show|help."""
 import json
 import discord
 from discord import app_commands
@@ -9,6 +9,35 @@ class PoCGroup(app_commands.Group):
     def __init__(self, bot: 'ScanBot'):
         super().__init__(name="poc", description="Manage PoC scripts")
         self.bot = bot
+
+    @app_commands.command(name="help", description="Show PoC command help")
+    async def poc_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="/poc — Proof-of-Concept Scripts", color=0x5865F2)
+        embed.add_field(
+            name="/poc list `[vendor]`",
+            value="List all PoC scripts. Optionally filter by vendor.\n"
+                  "Shows ID, name, CVE, vendor, and severity for each.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/poc add `<name>` `[options]`",
+            value="Add a PoC script. Required: `name`. Provide script via `file` upload\n"
+                  "or `script_content` text. Options: `cve_id`, `vendor`, `protocol`,\n"
+                  "`script_type` (python/bash/powershell), `description`, `severity`.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/poc show `<id>`",
+            value="Show full PoC details including description, script content,\n"
+                  "CVE, vendor, protocol, severity, and target list.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/poc remove `<id>`",
+            value="Remove a PoC script by its ID.",
+            inline=False,
+        )
+        await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="add", description="Add a new PoC script")
     @app_commands.describe(

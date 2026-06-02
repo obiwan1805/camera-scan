@@ -1,4 +1,4 @@
-"""Dict command group — /dict add|remove|import|show — password/credential dictionaries."""
+"""Dict command group — /dict add|remove|import|show|list|help — password/credential dictionaries."""
 import discord
 from discord import app_commands
 from .common import safe_send
@@ -8,6 +8,40 @@ class DictGroup(app_commands.Group):
     def __init__(self, bot: 'ScanBot'):
         super().__init__(name="dict", description="Manage password/credential dictionaries")
         self.bot = bot
+
+    @app_commands.command(name="help", description="Show dict command help")
+    async def dict_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="/dict — Password & Credential Dictionaries", color=0x5865F2)
+        embed.add_field(
+            name="/dict list",
+            value="List all dictionary types and their entry counts.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/dict add `<dict_type>` `<value>`",
+            value="Add a single entry to a dictionary.\n"
+                  "`dict_type`: category name (e.g. passwords, default_creds)\n"
+                  "`value`: the entry (e.g. `admin123` or `admin:admin123`)",
+            inline=False,
+        )
+        embed.add_field(
+            name="/dict import `<dict_type>` `<file>`",
+            value="Bulk import entries from a text file (one entry per line).\n"
+                  "Duplicates are silently skipped.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/dict show `<dict_type>`",
+            value="Display all entries in a dictionary with their IDs.\n"
+                  "Use the IDs with `/dict remove` to delete specific entries.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/dict remove `<id>`",
+            value="Remove a single entry by its ID (shown in `/dict show`).",
+            inline=False,
+        )
+        await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="add", description="Add an entry to a dictionary")
     @app_commands.describe(

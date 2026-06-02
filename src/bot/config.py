@@ -1,4 +1,4 @@
-"""Config command group — /config show|scan_rate|max_concurrent|batch_size."""
+"""Config command group — /config show|scan_rate|max_concurrent|batch_size|help."""
 import discord
 from discord import app_commands
 from .common import safe_send
@@ -8,6 +8,35 @@ class ConfigGroup(app_commands.Group):
     def __init__(self, bot: 'ScanBot'):
         super().__init__(name="config", description="Configure scan parameters")
         self.bot = bot
+
+    @app_commands.command(name="help", description="Show config command help")
+    async def config_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="/config — Scan Configuration", color=0x5865F2)
+        embed.add_field(
+            name="/config show",
+            value="Display all current config values including masscan rate,\n"
+                  "max concurrent tasks, and batch size.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/config scan_rate `<value>`",
+            value="Set masscan packets-per-second rate. Higher = faster but noisier.\n"
+                  "Default: 10,000. Cannot change while a scan is running.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/config max_concurrent `<value>`",
+            value="Max concurrent fingerprinter tasks. Controls how many IPs are\n"
+                  "probed simultaneously. Default: 200. Cannot change while running.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/config batch_size `<value>`",
+            value="Number of IPs passed from Layer 1 to Layer 2 per batch.\n"
+                  "Default: 1000. Cannot change while a scan is running.",
+            inline=False,
+        )
+        await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="show", description="Show current config values")
     async def config_show(self, interaction: discord.Interaction):

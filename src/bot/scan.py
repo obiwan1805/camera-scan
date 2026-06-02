@@ -1,4 +1,4 @@
-"""Scan command group — /scan start|pause|stop|progress."""
+"""Scan command group — /scan start|pause|stop|progress|help."""
 import asyncio
 import discord
 from discord import app_commands
@@ -9,6 +9,35 @@ class ScanGroup(app_commands.Group):
     def __init__(self, bot: 'ScanBot'):
         super().__init__(name="scan", description="Camera scan controls")
         self.bot = bot
+
+    @app_commands.command(name="help", description="Show scan command help")
+    async def scan_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="/scan — Camera Scan Controls", color=0x5865F2)
+        embed.add_field(
+            name="/scan start",
+            value="Start the Layer 1 (masscan) + Layer 2 (fingerprint) pipeline.\n"
+                  "Resumes from last checkpoint if a previous scan was paused.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/scan pause",
+            value="Pause the running scan. Progress is saved to the database.\n"
+                  "Use `/scan start` to resume from where it left off.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/scan stop",
+            value="Stop the scan and clear paused state. Progress is saved\n"
+                  "but the scan will restart from scratch on next `/scan start`.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/scan progress",
+            value="Show live stats: scanned IPs, fingerprints found, queue depth,\n"
+                  "processing rate, and elapsed time.",
+            inline=False,
+        )
+        await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="start", description="Start the camera scan pipeline")
     async def scan_start(self, interaction: discord.Interaction):

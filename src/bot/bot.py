@@ -19,6 +19,7 @@ from .config import ConfigGroup
 from .poc import PoCGroup
 from .dict import DictGroup
 from .target import TargetGroup
+from .signature import SignatureGroup
 
 
 class ScanBot(commands.Bot):
@@ -38,10 +39,12 @@ class ScanBot(commands.Bot):
         self._stop_signal = False
         self._delete_paused = False
         self._overrides: dict[str, int] = {}
+        self._sig_loader = None
 
         self._command_groups = [
             ScanGroup(self), ConfigGroup(self),
             PoCGroup(self), DictGroup(self), TargetGroup(self),
+            SignatureGroup(self),
         ]
 
     async def setup_hook(self):

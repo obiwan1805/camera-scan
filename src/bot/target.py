@@ -1,4 +1,4 @@
-"""Target command group — /target add|remove|list|show."""
+"""Target command group — /target add|remove|list|show|help."""
 import json
 import discord
 from discord import app_commands
@@ -9,6 +9,33 @@ class TargetGroup(app_commands.Group):
     def __init__(self, bot: 'ScanBot'):
         super().__init__(name="target", description="Manage camera/NVR targets")
         self.bot = bot
+
+    @app_commands.command(name="help", description="Show target command help")
+    async def target_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="/target — Camera & NVR Target Management", color=0x5865F2)
+        embed.add_field(
+            name="/target list `[vendor]`",
+            value="List all targets. Optionally filter by vendor.\n"
+                  "Shows ID, name, aliases, vendor, and category.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/target add `<name>` `[options]`",
+            value="Add a new target. Required: `name`. Options: `vendor`,\n"
+                  "`category` (ip_camera/nvr/dvr/router), `aliases` (comma-separated).",
+            inline=False,
+        )
+        embed.add_field(
+            name="/target show `<id>`",
+            value="Show full target details: vendor, category, and aliases.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/target remove `<id>`",
+            value="Remove a target by its ID.",
+            inline=False,
+        )
+        await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="add", description="Add a new target")
     @app_commands.describe(
