@@ -19,40 +19,54 @@ _FAVICON_PATHS = [
 class FaviconProber(Prober):
     """Collects favicon MMH3 hash for signature matching."""
 
+    def __init__(self):
+        self._http_session: Optional[aiohttp.ClientSession] = None
+        self._https_session: Optional[aiohttp.ClientSession] = None
+
+    async def _get_http_session(self) -> aiohttp.ClientSession:
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=3)
+            )
+        return self._http_session
+
+    async def _get_https_session(self) -> aiohttp.ClientSession:
+        if self._https_session is None or self._https_session.closed:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            connector = aiohttp.TCPConnector(ssl=ctx)
+            self._https_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=3),
+            )
+        return self._https_session
+
     async def probe(self, ip: str, port: int, collected: CollectedData) -> CollectedData:
-        for protocol in ["http", "https"]:
-            await self._probe_protocol(ip, port, protocol, collected)
+        for get_session in [self._get_http_session, self._get_https_session]:
+            await self._probe_protocol(ip, port, get_session, collected)
             if collected.favicon_hash is not None:
                 break
         return collected
 
     async def _probe_protocol(
-        self, ip: str, port: int, protocol: str, collected: CollectedData
+        self, ip: str, port: int, get_session, collected: CollectedData
     ) -> None:
         try:
-            connector = None
-            if protocol == "https":
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                connector = aiohttp.TCPConnector(ssl=ctx)
-
-            async with aiohttp.ClientSession(
-                connector=connector,
-                timeout=aiohttp.ClientTimeout(total=3)
-            ) as session:
-                for path in _FAVICON_PATHS:
-                    result = await self._get_favicon(ip, port, path, protocol, session, collected)
-                    if result:
-                        return
+            session = await get_session()
+            for path in _FAVICON_PATHS:
+                result = await self._get_favicon(ip, port, path, session, collected)
+                if result:
+                    return
         except Exception:
             pass
 
     async def _get_favicon(
-        self, ip: str, port: int, path: str, protocol: str,
-        session: aiohttp.ClientSession, collected: CollectedData
+        self, ip: str, port: int, path: str, session: aiohttp.ClientSession,
+        collected: CollectedData
     ) -> bool:
         try:
+            protocol = "https" if session is self._https_session else "http"
             url = f"{protocol}://{ip}:{port}{path}"
             async with session.get(url) as resp:
                 if resp.status != 200:
@@ -87,3 +101,10 @@ class FaviconProber(Prober):
 
     def supported_ports(self) -> Set[int]:
         return {80, 443, 8080, 8443}
+
+    async def close(self) -> None:
+        for session in (self._http_session, self._https_session):
+            if session and not session.closed:
+                await session.close()
+        self._http_session = None
+        self._https_session = None

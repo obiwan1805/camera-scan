@@ -19,3 +19,7 @@ class Prober(ABC):
     @abstractmethod
     def supported_ports(self) -> Set[int]:
         pass
+
+    async def close(self) -> None:
+        """Clean up resources (sessions, connections). Override if needed."""
+        pass
