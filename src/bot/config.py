@@ -14,26 +14,30 @@ class ConfigGroup(app_commands.Group):
         embed = discord.Embed(title="/config — Scan Configuration", color=0x5865F2)
         embed.add_field(
             name="/config show",
-            value="Display all current config values including masscan rate,\n"
-                  "max concurrent tasks, and batch size.",
+            value="Display current config values: masscan rate, max concurrent\n"
+                  "fingerprinter tasks, and batch size.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/config scan_rate `<value>`",
             value="Set masscan packets-per-second rate. Higher = faster but noisier.\n"
-                  "Default: 10,000. Cannot change while a scan is running.",
+                  "Default: 10,000. Applies on next `/scan start`.\n"
+                  "Cannot change while a scan is running.",
             inline=False,
         )
         embed.add_field(
             name="/config max_concurrent `<value>`",
             value="Max concurrent fingerprinter tasks. Controls how many IPs are\n"
-                  "probed simultaneously. Default: 200. Cannot change while running.",
+                  "probed simultaneously. Default: 200. Applies on next `/scan start`.\n"
+                  "Cannot change while a scan is running.",
             inline=False,
         )
         embed.add_field(
             name="/config batch_size `<value>`",
-            value="Number of IPs passed from Layer 1 to Layer 2 per batch.\n"
-                  "Default: 1000. Cannot change while a scan is running.",
+            value="Number of items per database write batch. Default: 1000.\n"
+                  "Applies on next `/scan start`.\n"
+                  "Cannot change while a scan is running.",
             inline=False,
         )
         await safe_send(interaction, embed=embed)

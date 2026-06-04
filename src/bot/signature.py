@@ -1,10 +1,11 @@
 """Signature command group with rich Discord UI."""
 import io
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
 from typing import Optional, List, Callable
-from .common import safe_send
+from .common import safe_send, ConfirmView, PaginatedView
 
 from src.layers.layer2_fingerprinter.signatures.loader import SignatureLoader
 from src.layers.layer2_fingerprinter.engine import SignatureEngine
@@ -14,26 +15,6 @@ from src.layers.layer2_fingerprinter.probers import HTTPProber, HTTPSProber, RTS
 # ---------------------------------------------------------------------------
 # Views (interactive components)
 # ---------------------------------------------------------------------------
-
-class PaginatedView(discord.ui.View):
-    """Paginated embed with prev/next buttons."""
-
-    def __init__(self, embeds: List[discord.Embed], timeout: int = 120):
-        super().__init__(timeout=timeout)
-        self.embeds = embeds
-        self.page = 0
-
-    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=0)
-    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page > 0:
-            self.page -= 1
-        await interaction.response.edit_message(embed=self.embeds[self.page], view=self)
-
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=0)
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page < len(self.embeds) - 1:
-            self.page += 1
-        await interaction.response.edit_message(embed=self.embeds[self.page], view=self)
 
 
 class VendorSelect(discord.ui.Select):
@@ -51,29 +32,156 @@ class VendorSelect(discord.ui.Select):
         await self._callback(interaction, self.values[0])
 
 
-class ConfirmView(discord.ui.View):
-    """Confirm or cancel an action."""
-
-    def __init__(self, confirm_fn: Callable, timeout: int = 30):
-        super().__init__(timeout=timeout)
-        self._confirm_fn = confirm_fn
-        self.confirmed = False
-
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, row=0)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.confirmed = True
-        self.stop()
-        await self._confirm_fn(interaction)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=0)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.stop()
-        await interaction.response.edit_message(content="Cancelled.", view=None)
-
 
 # ---------------------------------------------------------------------------
 # Modals (popup forms)
 # ---------------------------------------------------------------------------
+
+class TestSignatureModal(discord.ui.Modal, title="Test Signature Regex"):
+    """Test a regex pattern against sample text."""
+
+    pattern = discord.ui.TextInput(
+        label="Pattern / Regex",
+        placeholder=r"e.g. IPC-HFW\d+[A-Za-z\d-]*",
+        required=True, style=discord.TextStyle.paragraph,
+    )
+    sample = discord.ui.TextInput(
+        label="Sample text",
+        placeholder="Paste HTML, XML, or any text to test against",
+        required=True, style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(self, group: 'SignatureGroup'):
+        super().__init__()
+        self._group = group
+
+    async def on_submit(self, interaction: discord.Interaction):
+        pattern = self.pattern.value.strip()
+        sample = self.sample.value
+
+        try:
+            flags = re.DOTALL | re.IGNORECASE
+            m = re.search(pattern, sample, flags)
+
+            if m:
+                lines = [f"**Match found**"]
+                lines.append(f"Pattern: `{pattern}`")
+                lines.append(f"Match: `{m.group(0)}`")
+                for i, g in enumerate(m.groups(), 1):
+                    if g is not None:
+                        lines.append(f"Group {i}: `{g}`")
+
+                view = _TestResultView(self._group, pattern)
+                await safe_send(interaction, content="\n".join(lines), view=view)
+            else:
+                view = _RetryTestView(self._group, pattern)
+                await safe_send(interaction, content=f"**No match** for `{pattern}`", view=view)
+        except re.error as e:
+            await safe_send(interaction, content=f"**Invalid regex:** {e}")
+
+
+class _TestResultView(discord.ui.View):
+    """Shown after a successful test — Add button or Test Again."""
+
+    def __init__(self, group: 'SignatureGroup', pattern: str):
+        super().__init__(timeout=60)
+        self._group = group
+        self._pattern = pattern
+
+    @discord.ui.button(label="Add to Signature", style=discord.ButtonStyle.success, row=0)
+    async def add_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = AddSignatureModal(self._group, pattern_default=self._pattern)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Test Again", style=discord.ButtonStyle.secondary, row=0)
+    async def retry_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = TestSignatureModal(self._group)
+        modal.pattern.default = self._pattern
+        await interaction.response.send_modal(modal)
+
+
+class _RetryTestView(discord.ui.View):
+    """Shown after a failed test — re-opens test modal with pattern kept."""
+
+    def __init__(self, group: 'SignatureGroup', pattern: str):
+        super().__init__(timeout=60)
+        self._group = group
+        self._pattern = pattern
+
+    @discord.ui.button(label="Edit & Retry", style=discord.ButtonStyle.primary, row=0)
+    async def retry_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = TestSignatureModal(self._group)
+        modal.pattern.default = self._pattern
+        await interaction.response.send_modal(modal)
+
+
+class _AddPreviewView(discord.ui.View):
+    """Preview after add modal — Test or Confirm."""
+
+    def __init__(self, group: 'SignatureGroup', vendor: str, ptype: str,
+                 pattern: str, cves: list[str], can_test: bool):
+        super().__init__(timeout=120)
+        self._group = group
+        self._vendor = vendor
+        self._ptype = ptype
+        self._pattern = pattern
+        self._cves = cves
+        self._can_test = can_test
+        # Remove test button if not testable type
+        if not can_test:
+            self.remove_item(self.test_btn)
+
+    @discord.ui.button(label="Test Regex", style=discord.ButtonStyle.primary, row=0)
+    async def test_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = TestSignatureModal(self._group)
+        modal.pattern.default = self._pattern
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Confirm Add", style=discord.ButtonStyle.success, row=0)
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        loader = self._group._get_loader()
+        try:
+            if self._ptype == "favicon_hash":
+                loader.add_pattern(self._vendor, "favicon_hash", {"hash": int(self._pattern)})
+            elif self._ptype == "brand_keyword":
+                loader.add_pattern(self._vendor, "brand_keyword", {
+                    "pattern": self._pattern, "scope": ["html"], "cves": self._cves
+                })
+            elif self._ptype == "model":
+                loader.add_pattern(self._vendor, "model", {
+                    "regex": self._pattern, "scope": ["html", "xml_text"], "cves": self._cves
+                })
+            elif self._ptype == "version":
+                loader.add_pattern(self._vendor, "version", {
+                    "regex": self._pattern, "scope": ["html", "xml_text"], "cves": self._cves
+                })
+            elif self._ptype == "endpoint":
+                loader.add_pattern(self._vendor, "endpoint", {
+                    "path": self._pattern, "protocol": ["http", "https"]
+                })
+            elif self._ptype == "onvif":
+                loader.add_pattern(self._vendor, "onvif", {"manufacturer_match": [self._vendor]})
+            elif self._ptype == "rtsp_path":
+                loader.add_pattern(self._vendor, "rtsp_path", {"path": self._pattern})
+            elif self._ptype == "extra":
+                loader.add_pattern(self._vendor, "extra", {
+                    "type": "generic", "regex": self._pattern, "scope": [], "cves": self._cves
+                })
+
+            self._group._reload_engine(loader)
+            self.stop()
+            await interaction.response.edit_message(
+                content=f"Added {self._ptype} to **{self._vendor}**. Engine reloaded.",
+                embed=None, view=None,
+            )
+        except Exception as e:
+            await interaction.response.edit_message(content=f"Error: {e}", embed=None, view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=0)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="Cancelled.", embed=None, view=None)
+
 
 class AddSignatureModal(discord.ui.Modal, title="Add Signature"):
     """Popup form for adding a new signature pattern."""
@@ -89,60 +197,34 @@ class AddSignatureModal(discord.ui.Modal, title="Add Signature"):
         placeholder="regex or keyword string or endpoint path",
         required=False, style=discord.TextStyle.paragraph,
     )
-    scope = discord.ui.TextInput(
-        label="Scope (comma-separated)",
-        placeholder="html, headers, xml_text, json_text, rtsp_banner, onvif_response",
-        required=False,
-    )
     cves = discord.ui.TextInput(label="CVEs (comma-separated)", placeholder="CVE-2021-36260", required=False)
 
-    def __init__(self, group: 'SignatureGroup'):
+    def __init__(self, group: 'SignatureGroup', pattern_default: str = ""):
         super().__init__()
         self._group = group
+        if pattern_default:
+            self.pattern.default = pattern_default
 
     async def on_submit(self, interaction: discord.Interaction):
-        loader = self._group._get_loader()
         vendor = self.vendor.value.strip()
         ptype = self.pattern_type.value.strip()
         pattern = self.pattern.value.strip()
-        scope_list = [s.strip() for s in self.scope.value.split(",") if s.strip()] if self.scope.value else []
         cves_list = [c.strip() for c in self.cves.value.split(",") if c.strip()] if self.cves.value else []
 
-        try:
-            if ptype == "favicon_hash":
-                loader.add_pattern(vendor, "favicon_hash", {"hash": int(pattern)})
-            elif ptype == "brand_keyword":
-                loader.add_pattern(vendor, "brand_keyword", {
-                    "pattern": pattern, "scope": scope_list or ["html"], "cves": cves_list
-                })
-            elif ptype == "model":
-                loader.add_pattern(vendor, "model", {
-                    "regex": pattern, "scope": scope_list or ["html", "xml_text"], "cves": cves_list
-                })
-            elif ptype == "version":
-                loader.add_pattern(vendor, "version", {
-                    "regex": pattern, "scope": scope_list or ["html", "xml_text"], "cves": cves_list
-                })
-            elif ptype == "endpoint":
-                loader.add_pattern(vendor, "endpoint", {
-                    "path": pattern, "protocol": ["http", "https"]
-                })
-            elif ptype == "onvif":
-                loader.add_pattern(vendor, "onvif", {"manufacturer_match": [vendor]})
-            elif ptype == "rtsp_path":
-                loader.add_pattern(vendor, "rtsp_path", {"path": pattern})
-            elif ptype == "extra":
-                loader.add_pattern(vendor, "extra", {
-                    "type": "generic", "regex": pattern, "scope": scope_list, "cves": cves_list
-                })
-            else:
-                await safe_send(interaction, content=f"Unknown type: {ptype}")
-                return
+        if ptype not in ("favicon_hash", "brand_keyword", "model", "version",
+                         "endpoint", "onvif", "rtsp_path", "extra"):
+            await safe_send(interaction, content=f"Unknown type: {ptype}")
+            return
 
-            self._group._reload_engine(loader)
-            await safe_send(interaction, content=f"Added {ptype} to **{vendor}**. Engine reloaded.")
-        except Exception as e:
-            await safe_send(interaction, content=f"Error: {e}")
+        # Show preview with Test + Confirm buttons
+        can_test = ptype in ("brand_keyword", "model", "version") and bool(pattern)
+        desc = f"Vendor: **{vendor}**\nType: **{ptype}**\nPattern: `{pattern}`"
+        if cves_list:
+            desc += f"\nCVEs: {', '.join(cves_list)}"
+
+        view = _AddPreviewView(self._group, vendor, ptype, pattern, cves_list, can_test)
+        embed = discord.Embed(title="Preview — Confirm or Test", description=desc, color=0xFEE75C)
+        await safe_send(interaction, embed=embed, view=view)
 
 
 # ---------------------------------------------------------------------------
@@ -197,44 +279,59 @@ class SignatureGroup(app_commands.Group):
         embed.add_field(
             name="/signature list `[vendor]`",
             value="List signature counts for a vendor. Without vendor, opens a\n"
-                  "dropdown to pick from all loaded vendors.",
+                  "dropdown to pick from all loaded vendors.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/signature show `<vendor>` `[pattern_type]`",
             value="Show detailed signature patterns. Without type, shows a summary\n"
                   "with counts per type. With type (e.g. model, brand_keyword),\n"
-                  "shows each pattern with regex, scope, CVEs. Paginated if long.",
+                  "shows each pattern with regex, scope, CVEs. Paginated if long.\n"
+                  "Works anytime.",
+            inline=False,
+        )
+        embed.add_field(
+            name="/signature test",
+            value="Opens a form to test a regex against sample text.\n"
+                  "If matched, shows result with an 'Add to Signature' button.\n"
+                  "If no match, shows 'Edit & Retry' button. Test as many times\n"
+                  "as you want before adding. Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/signature add",
             value="Opens a popup form to add a new signature. Fields: vendor,\n"
                   "type (brand_keyword|model|version|endpoint|favicon_hash|onvif|\n"
-                  "rtsp_path|extra), pattern/regex, scope, CVEs. Auto-reloads engine.",
+                  "rtsp_path|extra), pattern/regex, CVEs. Auto-reloads engine.\n"
+                  "Tip: use `/signature test` first to verify your regex. Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/signature remove `<vendor>` `<pattern_type>` `<index>`",
             value="Remove a specific pattern by index (shown in /signature show).\n"
-            "Shows a confirmation prompt before deleting. Auto-reloads engine.",
+            "Shows a confirmation prompt before deleting. Auto-reloads engine.\n"
+            "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/signature export `<vendor>`",
-            value="Export a vendor's full YAML signature file as a Discord attachment.",
+            value="Export a vendor's full YAML signature file as a Discord attachment.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/signature import `<file>`",
             value="Import signatures from an uploaded YAML file. Validates against\n"
-                  "the schema, writes to config/signatures/, and reloads the engine.",
+                  "the schema, writes to config/signatures/, and reloads the engine.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/signature reload",
             value="Reload all signature YAML files from disk and rebuild the engine.\n"
-                  "Also happens automatically every 30 seconds via hot-reload.",
+                  "Also happens automatically every 30 seconds via hot-reload.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.set_footer(text="Signature types: brand_keyword, model, version, endpoint, favicon_hash, onvif, rtsp_path, extra")
@@ -299,6 +396,8 @@ class SignatureGroup(app_commands.Group):
         self, interaction: discord.Interaction,
         vendor: str, pattern_type: Optional[str] = None,
     ):
+        await interaction.response.defer()
+
         loader = self._get_loader()
         sig = self._find_vendor(loader, vendor)
         if not sig:
@@ -378,6 +477,12 @@ class SignatureGroup(app_commands.Group):
             await safe_send(interaction, embed=embeds[0], view=view)
         else:
             await safe_send(interaction, embed=embeds[0])
+
+    # --- test (opens test modal) ---
+    @app_commands.command(name="test", description="Test a regex pattern against sample text")
+    async def signature_test(self, interaction: discord.Interaction):
+        modal = TestSignatureModal(self)
+        await interaction.response.send_modal(modal)
 
     # --- add (opens modal) ---
     @app_commands.command(name="add", description="Add a new signature (opens form)")

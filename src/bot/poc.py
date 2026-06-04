@@ -16,25 +16,29 @@ class PoCGroup(app_commands.Group):
         embed.add_field(
             name="/poc list `[vendor]`",
             value="List all PoC scripts. Optionally filter by vendor.\n"
-                  "Shows ID, name, CVE, vendor, and severity for each.",
+                  "Shows ID, name, CVE, vendor, and severity for each.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/poc add `<name>` `[options]`",
             value="Add a PoC script. Required: `name`. Provide script via `file` upload\n"
                   "or `script_content` text. Options: `cve_id`, `vendor`, `protocol`,\n"
-                  "`script_type` (python/bash/powershell), `description`, `severity`.",
+                  "`script_type` (python/bash/powershell), `description`, `severity`.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/poc show `<id>`",
             value="Show full PoC details including description, script content,\n"
-                  "CVE, vendor, protocol, severity, and target list.",
+                  "CVE, vendor, protocol, severity, and target list.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/poc remove `<id>`",
-            value="Remove a PoC script by its ID.",
+            value="Remove a PoC script by its ID.\n"
+                  "Works anytime.",
             inline=False,
         )
         await safe_send(interaction, embed=embed)

@@ -14,31 +14,35 @@ class DictGroup(app_commands.Group):
         embed = discord.Embed(title="/dict — Password & Credential Dictionaries", color=0x5865F2)
         embed.add_field(
             name="/dict list",
-            value="List all dictionary types and their entry counts.",
+            value="List all dictionary types and their entry counts.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/dict add `<dict_type>` `<value>`",
             value="Add a single entry to a dictionary.\n"
                   "`dict_type`: category name (e.g. passwords, default_creds)\n"
-                  "`value`: the entry (e.g. `admin123` or `admin:admin123`)",
+                  "`value`: the entry (e.g. `admin123` or `admin:admin123`)\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/dict import `<dict_type>` `<file>`",
             value="Bulk import entries from a text file (one entry per line).\n"
-                  "Duplicates are silently skipped.",
+                  "Duplicates are silently skipped. Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/dict show `<dict_type>`",
             value="Display all entries in a dictionary with their IDs.\n"
-                  "Use the IDs with `/dict remove` to delete specific entries.",
+                  "Use the IDs with `/dict remove` to delete specific entries.\n"
+                  "Works anytime.",
             inline=False,
         )
         embed.add_field(
             name="/dict remove `<id>`",
-            value="Remove a single entry by its ID (shown in `/dict show`).",
+            value="Remove a single entry by its ID (shown in `/dict show`).\n"
+                  "Works anytime.",
             inline=False,
         )
         await safe_send(interaction, embed=embed)
