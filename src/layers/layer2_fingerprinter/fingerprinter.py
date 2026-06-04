@@ -59,12 +59,16 @@ class Fingerprinter(Filter):
         self._failed = 0
         self._skipped = 0
         self._start_time = None
-        self._processing_count = 0
+        self._active_tasks: set[asyncio.Task] = set()
         self._reload_task: Optional[asyncio.Task] = None
+
+    @property
+    def _processing_count(self) -> int:
+        return len(self._active_tasks)
 
     async def start(self) -> None:
         self._running = True
-        self._start_time = asyncio.get_event_loop().time()
+        self._start_time = asyncio.get_running_loop().time()
         self._task = asyncio.create_task(self._run())
         self._status_task = asyncio.create_task(self._status_reporter())
         self._reload_task = asyncio.create_task(self._sig_watcher())
@@ -78,55 +82,61 @@ class Fingerprinter(Filter):
                     self.input_queue.get(),
                     timeout=0.5
                 )
-                asyncio.create_task(self._process_item(item))
+                await self._semaphore.acquire()
+                task = asyncio.create_task(self._process_item_with_semaphore(item))
+                self._active_tasks.add(task)
+                task.add_done_callback(self._active_tasks.discard)
             except asyncio.TimeoutError:
                 pass
             except Exception as e:
                 import traceback
                 self.logger.error(f"Error in fingerprinter loop: {e}\n{traceback.format_exc()}")
 
+    async def _process_item_with_semaphore(self, item: tuple[str, int]) -> None:
+        """Process a single item — semaphore already acquired in _run."""
+        try:
+            await self._process_item(item)
+        finally:
+            self._semaphore.release()
+
     async def _process_item(self, item: tuple[str, int]) -> None:
-        """Process a single item with semaphore protection."""
-        async with self._semaphore:
-            self._processing_count += 1
-            try:
-                # Skip items already fingerprinted (resume dedup)
-                ip, port = item
-                if await self.storage.has_fingerprint(ip, port):
-                    if hasattr(self.input_queue, 'ack'):
-                        await self.input_queue.ack(item)
-                    self._processed += 1
-                    self._skipped += 1
-                    return
-
-                result = await self.process(item)
+        """Process a single item."""
+        try:
+            # Skip items already fingerprinted (resume dedup)
+            ip, port = item
+            if await self.storage.has_fingerprint(ip, port):
+                if hasattr(self.input_queue, 'ack'):
+                    await self.input_queue.ack(item)
                 self._processed += 1
+                self._skipped += 1
+                return
 
-                if isinstance(result, CameraFingerprint):
-                    await self.output_queue.put(result)
-                    if hasattr(self.input_queue, 'ack'):
-                        await self.input_queue.ack(item)
-                    self._successful += 1
-                    fp = result.fingerprint
-                    cves = f" cves={fp.cves}" if fp.cves else ""
-                    self.logger.info(
-                        f"[OK] {result.ip}:{result.port} - "
-                        f"{fp.vendor or 'Unknown'} - {fp.model or ''} "
-                        f"{fp.version or ''}{cves}"
-                    )
-                else:
-                    if hasattr(self.input_queue, 'mark_failed'):
-                        await self.input_queue.mark_failed(item)
-                    self._failed += 1
-            except Exception as e:
-                import traceback
-                self._processed += 1
-                self._failed += 1
+            result = await self.process(item)
+            self._processed += 1
+
+            if isinstance(result, CameraFingerprint):
+                await self.output_queue.put(result)
+                if hasattr(self.input_queue, 'ack'):
+                    await self.input_queue.ack(item)
+                self._successful += 1
+                fp = result.fingerprint
+                cves = f" cves={fp.cves}" if fp.cves else ""
+                self.logger.info(
+                    f"[OK] {result.ip}:{result.port} - "
+                    f"{fp.vendor or 'Unknown'} - {fp.model or ''} "
+                    f"{fp.version or ''}{cves}"
+                )
+            else:
                 if hasattr(self.input_queue, 'mark_failed'):
                     await self.input_queue.mark_failed(item)
-                self.logger.error(f"Error processing item: {e}")
-            finally:
-                self._processing_count -= 1
+                self._failed += 1
+        except Exception as e:
+            import traceback
+            self._processed += 1
+            self._failed += 1
+            if hasattr(self.input_queue, 'mark_failed'):
+                await self.input_queue.mark_failed(item)
+            self.logger.error(f"Error processing item: {e}")
 
     async def process(self, item: tuple[str, int]) -> Optional[CameraFingerprint]:
         try:
@@ -153,11 +163,8 @@ class Fingerprinter(Filter):
 
     async def _fingerprint(self, ip: str, port: int) -> tuple[Optional[Fingerprint], list[RawResponse]]:
         """Three-phase pipeline: collect -> match -> resolve."""
-        # Phase 1: Collect raw data via all applicable probers
-        collected = CollectedData(ip=ip, port=port)
-        for prober in self._probers:
-            if port in prober.supported_ports():
-                collected = await prober.probe(ip, port, collected)
+        # Phase 1: Collect raw data via all applicable probers concurrently
+        collected = await self._collect(ip, port)
 
         # Phase 2: Run ALL signatures against collected data
         matches = self._engine.match(collected)
@@ -167,11 +174,68 @@ class Fingerprinter(Filter):
 
         return fp, collected.raw_responses
 
+    async def _collect(self, ip: str, port: int) -> CollectedData:
+        """Run all applicable probers concurrently and merge results."""
+        applicable = [p for p in self._probers if port in p.supported_ports()]
+        if not applicable:
+            return CollectedData(ip=ip, port=port)
+
+        async def _run_prober(prober):
+            try:
+                return await prober.probe(ip, port, CollectedData(ip=ip, port=port))
+            except Exception:
+                return None
+
+        results = await asyncio.gather(*[_run_prober(p) for p in applicable])
+
+        collected = CollectedData(ip=ip, port=port)
+        for partial in results:
+            if partial is None:
+                continue
+            if partial.html and not collected.html:
+                collected.html = partial.html
+            collected.headers.update(partial.headers)
+            collected.xml_texts.extend(partial.xml_texts)
+            collected.json_texts.extend(partial.json_texts)
+            if partial.rtsp_banner and not collected.rtsp_banner:
+                collected.rtsp_banner = partial.rtsp_banner
+            if partial.onvif_response and not collected.onvif_response:
+                collected.onvif_response = partial.onvif_response
+            if partial.favicon_hash is not None:
+                collected.favicon_hash = partial.favicon_hash
+            if partial.ssl_subject and not collected.ssl_subject:
+                collected.ssl_subject = partial.ssl_subject
+            collected.raw_responses.extend(partial.raw_responses)
+
+        return collected
+
     async def _status_reporter(self) -> None:
         """Periodically report progress."""
+        cleanup_counter = 0
         while self._running:
             await asyncio.sleep(5)
-            elapsed = asyncio.get_event_loop().time() - self._start_time
+            elapsed = asyncio.get_running_loop().time() - self._start_time
+            rate = self._processed / elapsed if elapsed > 0 else 0
+            queue_size = self.input_queue.size()
+
+            self.logger.info(
+                f"[Progress] Processed: {self._processed} | "
+                f"Success: {self._successful} | "
+                f"Failed: {self._failed} | "
+                f"Skipped: {self._skipped} | "
+                f"Queue: {queue_size} | "
+                f"Active: {self._processing_count} | "
+                f"Rate: {rate:.1f}/s"
+            )
+
+            # Periodically clean up old claims
+            cleanup_counter += 1
+            if cleanup_counter >= 12:  # every ~60 seconds
+                cleanup_counter = 0
+                try:
+                    await self.storage.cleanup_claims(max_age_hours=24)
+                except Exception:
+                    pass
             rate = self._processed / elapsed if elapsed > 0 else 0
             queue_size = self.input_queue.size()
 
@@ -228,10 +292,16 @@ class Fingerprinter(Filter):
     async def stop(self, **kwargs) -> None:
         self._running = False
 
-        timeout = 30
-        while self._processing_count > 0 and timeout > 0:
-            await asyncio.sleep(1)
-            timeout -= 1
+        # Wait for in-flight tasks to complete
+        if self._active_tasks:
+            await asyncio.wait(self._active_tasks, timeout=30)
+
+        # Close prober sessions
+        for prober in self._probers:
+            try:
+                await prober.close()
+            except Exception:
+                pass
 
         if self._status_task:
             self._status_task.cancel()
@@ -254,7 +324,7 @@ class Fingerprinter(Filter):
             except asyncio.CancelledError:
                 pass
 
-        elapsed = asyncio.get_event_loop().time() - self._start_time if self._start_time else 0
+        elapsed = asyncio.get_running_loop().time() - self._start_time if self._start_time else 0
         rate = self._processed / elapsed if elapsed > 0 else 0
 
         self.logger.info(

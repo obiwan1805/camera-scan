@@ -29,14 +29,20 @@ class AggregationResolver:
 
         # Step 1: Determine vendor by vote count (only from field=vendor matches)
         vendor_counts: Dict[str, int] = {}
+        vendor_total: Dict[str, int] = {}
         for m in matches:
             if m.field == "vendor" and not m.vendor.startswith("_"):
                 vendor_counts[m.vendor] = vendor_counts.get(m.vendor, 0) + 1
+            if not m.vendor.startswith("_"):
+                vendor_total[m.vendor] = vendor_total.get(m.vendor, 0) + 1
 
         if not vendor_counts:
             return None
 
-        best_vendor = max(vendor_counts, key=vendor_counts.get)
+        def _sort_key(v):
+            return (vendor_counts.get(v, 0), vendor_total.get(v, 0))
+
+        best_vendor = max(vendor_counts, key=_sort_key)
 
         # Step 2: Collect all matches for the winning vendor
         vendor_matches = [m for m in matches if m.vendor == best_vendor]
