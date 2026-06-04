@@ -89,7 +89,6 @@ class ScanBot(commands.Bot):
             self.scanner = PortScanner(
                 config=config.layers,
                 output_queue=queues[0],
-                cidr_file="data/cidrs.txt",
                 storage=self.storage,
             )
             self.fingerprinter = Fingerprinter(
@@ -99,7 +98,9 @@ class ScanBot(commands.Bot):
                 storage=self.storage,
             )
 
-            input_source = CIDRInputSource("data/cidrs.txt")
+            rows = await self.db.generic_list("targets")
+            targets = [r["target"] for r in rows]
+            input_source = CIDRInputSource(targets)
 
             self.pipeline = Pipeline(
                 layers=[self.scanner, self.fingerprinter],
@@ -152,12 +153,107 @@ class ScanBot(commands.Bot):
         while not self._stop_signal:
             await asyncio.sleep(0.5)
 
+    async def _run_masscan_import(self, import_file: str) -> None:
+        """Run standalone fingerprinter pipeline for imported masscan output."""
+        import_path = Path(import_file)
+        try:
+            config = get_default_config()
+            if "max_concurrent" in self._overrides:
+                config.layer2.worker_pool.max_concurrent = self._overrides["max_concurrent"]
+
+            max_backlog = config.layer2.worker_pool.max_concurrent * 2
+
+            builder = PipelineBuilder(config)
+            self.storage = builder.build_storage()
+            queues = builder.build_queues(self.storage)
+
+            self.fingerprinter = Fingerprinter(
+                config=config.layer2,
+                input_queue=queues[0],
+                output_queue=queues[1],
+                storage=self.storage,
+            )
+
+            await self.fingerprinter.start()
+            self._status = "running"
+            self._stop_signal = False
+
+            # Feed from file — batch of 10 with backpressure, same as _watch_and_feed
+            from src.layers import PortScanner
+            batch = []
+            total_fed = 0
+            with open(import_path) as f:
+                for line in f:
+                    if self._stop_signal:
+                        break
+                    result = PortScanner.parse_masscan_line(line)
+                    if result:
+                        ip, port = result
+                        batch.append((ip, port))
+                        if len(batch) >= 10:
+                            if self.storage:
+                                from src.storage.schemas import PortScanResult
+                                await self.storage.submit("port_scans", [
+                                    PortScanResult(ip=ip, port=port) for ip, port in batch
+                                ])
+                            for item in batch:
+                                await queues[0].put(item)
+                            total_fed += len(batch)
+                            batch = []
+
+                        # Backpressure: wait if queue is too deep
+                        while queues[0].size() > max_backlog and not self._stop_signal:
+                            await asyncio.sleep(0.5)
+
+            # Flush remaining
+            if batch:
+                if self.storage:
+                    from src.storage.schemas import PortScanResult
+                    await self.storage.submit("port_scans", [
+                        PortScanResult(ip=ip, port=port) for ip, port in batch
+                    ])
+                for item in batch:
+                    await queues[0].put(item)
+                total_fed += len(batch)
+
+            print(f"[Import] Fed {total_fed:,} entries to fingerprinter")
+
+            # Wait for fingerprinter to finish OR stop signal
+            while self.fingerprinter._running and not self._stop_signal:
+                if queues[0].size() == 0 and self.fingerprinter._processing_count == 0:
+                    break
+                await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"Masscan import error: {e}")
+            traceback.print_exc()
+        finally:
+            if import_path.exists():
+                import_path.unlink()
+            if self.fingerprinter:
+                fp = self.fingerprinter
+                print(
+                    f"[Import Complete] Processed: {fp._processed:,} | "
+                    f"Successful: {fp._successful:,} | "
+                    f"Failed: {fp._failed:,} | "
+                    f"Skipped: {fp._skipped:,}"
+                )
+                await self.fingerprinter.stop()
+            self._status = "idle"
+            self._stop_signal = False
+            self._delete_paused = False
+            self.fingerprinter = None
+            self.storage = None
+            gc.collect()
+
     def _build_progress_embed(self) -> discord.Embed:
         embed = discord.Embed(title="Camera Scan Progress", color=0x5865F2)
 
         if self.scanner:
             elapsed = (
-                asyncio.get_event_loop().time() - self.scanner._start_time
+                asyncio.get_running_loop().time() - self.scanner._start_time
                 if self.scanner._start_time
                 else 0
             )
@@ -189,7 +285,7 @@ class ScanBot(commands.Bot):
             skipped = self.fingerprinter._skipped
             active = self.fingerprinter._processing_count
             elapsed = (
-                asyncio.get_event_loop().time() - self.fingerprinter._start_time
+                asyncio.get_running_loop().time() - self.fingerprinter._start_time
                 if self.fingerprinter._start_time
                 else 0
             )

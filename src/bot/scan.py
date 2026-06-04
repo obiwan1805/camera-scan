@@ -16,25 +16,31 @@ class ScanGroup(app_commands.Group):
         embed.add_field(
             name="/scan start",
             value="Start the Layer 1 (masscan) + Layer 2 (fingerprint) pipeline.\n"
-                  "Resumes from last checkpoint if a previous scan was paused.",
+                  "Resumes from `paused.conf` if a previous scan was paused.\n"
+                  "Requires at least one target in `/target list`. "
+                  "Cannot start while another scan is running.",
             inline=False,
         )
         embed.add_field(
             name="/scan pause",
-            value="Pause the running scan. Progress is saved to the database.\n"
-                  "Use `/scan start` to resume from where it left off.",
+            value="Pause the running scan. Waits for the pipeline to fully stop\n"
+                  "before responding (masscan writes `paused.conf`).\n"
+                  "Use `/scan start` to resume from where it left off.\n"
+                  "Only works when a scan is running.",
             inline=False,
         )
         embed.add_field(
             name="/scan stop",
-            value="Stop the scan and clear paused state. Progress is saved\n"
-                  "but the scan will restart from scratch on next `/scan start`.",
+            value="Stop the scan and delete `paused.conf`. Fingerprinted results\n"
+                  "are saved, but the scan will restart from scratch on next `/scan start`.\n"
+                  "Only works when a scan is running.",
             inline=False,
         )
         embed.add_field(
             name="/scan progress",
-            value="Show live stats: scanned IPs, fingerprints found, queue depth,\n"
-                  "processing rate, and elapsed time.",
+            value="Show live stats: scanned IPs, discovered hosts, fingerprints,\n"
+                  "queue depth, processing rate, and elapsed time.\n"
+                  "Only works when a scan is running.",
             inline=False,
         )
         await safe_send(interaction, embed=embed)
@@ -53,8 +59,22 @@ class ScanGroup(app_commands.Group):
         if self.bot._scan_task:
             await self.bot._scan_task
 
+        # Check if there are targets or an imported masscan file (unless resuming)
+        from pathlib import Path
+        import_file = Path("data/masscan_import.txt")
+        if not Path("paused.conf").exists() and not import_file.exists():
+            rows = await self.bot.db.generic_list("targets")
+            if not rows:
+                await safe_send(interaction, content="No targets configured. Use `/target add` or `/target import-masscan` first.")
+                return
+
         await safe_send(interaction, content="Starting scan...")
-        self.bot._scan_task = asyncio.create_task(self.bot._run_pipeline())
+
+        if import_file.exists() and not Path("paused.conf").exists():
+            # Feed imported masscan data directly to fingerprinter
+            self.bot._scan_task = asyncio.create_task(self.bot._run_masscan_import(str(import_file)))
+        else:
+            self.bot._scan_task = asyncio.create_task(self.bot._run_pipeline())
 
     @app_commands.command(name="pause", description="Pause the current scan")
     async def scan_pause(self, interaction: discord.Interaction):
@@ -65,10 +85,16 @@ class ScanGroup(app_commands.Group):
         self.bot._status = "stopping"
         self.bot._stop_signal = True
 
-        embed = self.bot._build_progress_embed()
-        embed.title = "Scan Paused"
-        embed.color = 0xFEE75C
-        await safe_send(interaction, embed=embed)
+        # Defer response — pause takes time (masscan SIGINT, pipeline teardown)
+        await interaction.response.defer()
+
+        # Wait for pipeline to fully stop
+        if self.bot._scan_task:
+            await self.bot._scan_task
+
+        embed = discord.Embed(title="Scan Paused", color=0xFEE75C)
+        embed.add_field(name="Status", value="Pipeline fully stopped. Use `/scan start` to resume.", inline=False)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="stop", description="Stop the current scan")
     async def scan_stop(self, interaction: discord.Interaction):
@@ -87,7 +113,7 @@ class ScanGroup(app_commands.Group):
 
     @app_commands.command(name="progress", description="Show current scan progress")
     async def scan_progress(self, interaction: discord.Interaction):
-        if self.bot._status != "running" or not self.bot.scanner:
+        if self.bot._status != "running" or (not self.bot.scanner and not self.bot.fingerprinter):
             await safe_send(interaction, content="No scan is running.")
             return
 
