@@ -38,6 +38,14 @@ def count_ips_in_cidr(cidr: str) -> int:
 def count_total_ips(cidr_list: list) -> int:
     return sum(count_ips_in_cidr(cidr) for cidr in cidr_list)
 
+def classify_target(target: str) -> str:
+    if "/" in target:
+        return "cidr"
+    if "-" in target:
+        return "range"
+    return "ip"
+
+
 def count_ips_in_range(spec: str) -> int:
     """Count IPs in CIDR or IP range (e.g. '1.52.0.0-1.52.246.255')."""
     if "/" in spec:

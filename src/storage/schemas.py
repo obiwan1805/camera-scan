@@ -97,9 +97,6 @@ class DictEntry(BaseModel):
     value: str
 
 
-class Target(BaseModel):
-    name: str
-    aliases: List[str] = []
-    vendor: Optional[str] = None
-    category: Optional[str] = None
-    metadata: dict = {}
+class ScanTarget(BaseModel):
+    target: str
+    type: str = "cidr"

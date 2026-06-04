@@ -39,13 +39,11 @@ class DurableQueue(QueueProtocol):
     async def put(self, item: Any, timeout: Optional[float] = None) -> None:
         item_key = self._make_key(item)
         item_data = self._serialize(item)
-        await self._storage.enqueue_item(self._queue_name, item_key, item_data)
+        await self._storage.enqueue_claimed_item(self._queue_name, item_key, item_data)
         await asyncio.wait_for(self._mem_queue.put(item), timeout)
 
     async def get(self, timeout: Optional[float] = None) -> Any:
         item = await asyncio.wait_for(self._mem_queue.get(), timeout)
-        item_key = self._make_key(item)
-        await self._storage.claim_item(self._queue_name, item_key)
         return item
 
     async def ack(self, item: Any) -> None:

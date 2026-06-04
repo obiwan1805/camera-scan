@@ -33,6 +33,10 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
+    async def enqueue_claimed_item(self, queue_name: str, item_key: str, item_data: str) -> None:
+        pass
+
+    @abstractmethod
     async def claim_item(self, queue_name: str, item_key: str) -> None:
         pass
 
@@ -68,4 +72,8 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def generic_get(self, table: str, row_id: int) -> Optional[dict]:
+        pass
+
+    @abstractmethod
+    async def cleanup_claims(self, max_age_hours: int = 24) -> int:
         pass

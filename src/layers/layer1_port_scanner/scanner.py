@@ -14,15 +14,12 @@ from src.utils.network import count_total_ips, count_ips_in_range
 
 
 class CIDRInputSource(InputSource):
-    def __init__(self, cidr_file: str):
-        self.cidr_file = cidr_file
+    def __init__(self, targets: list[str]):
+        self._targets = targets
 
     async def read(self) -> AsyncIterator[str]:
-        with open(self.cidr_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    yield line
+        for t in self._targets:
+            yield t
 
 
 class PortScanner(Scanner):
@@ -30,12 +27,10 @@ class PortScanner(Scanner):
         self,
         config: Layer1Config,
         output_queue: QueueProtocol,
-        cidr_file: str = "data/cidrs.txt",
         storage: Optional[StorageBackend] = None
     ):
         self.config = config
         self.output_queue = output_queue
-        self.cidr_file = cidr_file
         self.storage = storage
         self.logger = setup_logger("PortScanner")
         self._watcher_task: Optional[asyncio.Task] = None
@@ -57,10 +52,21 @@ class PortScanner(Scanner):
 
     async def start(self, input_source: InputSource) -> None:
         self._running = True
-        self._start_time = asyncio.get_event_loop().time()
+        self._start_time = asyncio.get_running_loop().time()
         self._masscan_done = asyncio.Event()
         self._watcher_task = asyncio.create_task(self._run_scanner(input_source))
         self._status_task = asyncio.create_task(self._status_reporter())
+
+    @staticmethod
+    def parse_masscan_line(line: str) -> Optional[tuple[str, int]]:
+        """Parse a single masscan -oL line. Returns (ip, port) or None."""
+        line = line.strip()
+        if not line.startswith("open tcp"):
+            return None
+        parts = line.split()
+        if len(parts) < 5:
+            return None
+        return (parts[3], int(parts[2]))
 
     def _parse_paused_conf(self, paused_conf: Path) -> None:
         """Parse paused.conf to extract ranges and estimate total IPs."""
@@ -197,23 +203,20 @@ class PortScanner(Scanner):
 
                     lines = complete_data.decode(errors='ignore').splitlines()
                     for line in lines:
-                        line = line.strip()
-                        if line.startswith("open tcp"):
-                            parts = line.split()
-                            if len(parts) >= 5:
-                                port = int(parts[2])
-                                ip = parts[3]
-                                batch.append((ip, port))
-                                self._discovered += 1
-                                if len(batch) >= 10:
-                                    if self.storage:
-                                        await self.storage.submit("port_scans", [
-                                            PortScanResult(ip=ip, port=port) for ip, port in batch
-                                        ])
-                                    for item in batch:
-                                        await self.output_queue.put(item)
-                                    self.logger.debug(f"Batch: {len(batch)} IPs")
-                                    batch = []
+                        result = self.parse_masscan_line(line)
+                        if result:
+                            ip, port = result
+                            batch.append((ip, port))
+                            self._discovered += 1
+                            if len(batch) >= 10:
+                                if self.storage:
+                                    await self.storage.submit("port_scans", [
+                                        PortScanResult(ip=ip, port=port) for ip, port in batch
+                                    ])
+                                for item in batch:
+                                    await self.output_queue.put(item)
+                                self.logger.debug(f"Batch: {len(batch)} IPs")
+                                batch = []
 
                     await asyncio.sleep(0.5)
         except asyncio.CancelledError:
@@ -297,7 +300,7 @@ class PortScanner(Scanner):
         """Periodically report scan progress."""
         while self._running:
             await asyncio.sleep(5)
-            elapsed = asyncio.get_event_loop().time() - self._start_time
+            elapsed = asyncio.get_running_loop().time() - self._start_time
             rate = self._discovered / elapsed if elapsed > 0 else 0
             queue_size = self.output_queue.size()
 
@@ -413,7 +416,7 @@ class PortScanner(Scanner):
                 pass
 
         # Final status
-        elapsed = asyncio.get_event_loop().time() - self._start_time if self._start_time else 0
+        elapsed = asyncio.get_running_loop().time() - self._start_time if self._start_time else 0
         rate = self._discovered / elapsed if elapsed > 0 else 0
         progress = f"{self._scanned_ips:,}" if self._total_ips == 0 else f"{self._scanned_ips:,} / {self._total_ips:,}"
         hit_rate = (self._discovered / self._scanned_ips * 100) if self._scanned_ips > 0 else 0

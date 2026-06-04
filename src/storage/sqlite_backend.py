@@ -93,15 +93,31 @@ class SQLiteBackend(StorageBackend):
             );
             CREATE TABLE IF NOT EXISTS targets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
-                aliases TEXT DEFAULT '[]',
-                vendor TEXT,
-                category TEXT,
-                metadata TEXT DEFAULT '{}',
-                created_at TEXT DEFAULT (datetime('now')),
-                updated_at TEXT DEFAULT (datetime('now'))
+                target TEXT UNIQUE NOT NULL,
+                type TEXT NOT NULL DEFAULT 'cidr',
+                created_at TEXT DEFAULT (datetime('now'))
             );
         """)
+        await self._migrate_targets_table()
+
+    async def _migrate_targets_table(self) -> None:
+        """Migrate old IoT-device targets table to new scan-target schema."""
+        cursor = await self._conn.execute("PRAGMA table_info(targets)")
+        columns = await cursor.fetchall()
+        col_names = [col[1] for col in columns]
+
+        if "name" in col_names and "target" not in col_names:
+            self._logger.info("Migrating targets table: old schema -> new scan-input schema")
+            await self._conn.execute("DROP TABLE targets")
+            await self._conn.execute("""
+                CREATE TABLE targets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target TEXT UNIQUE NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'cidr',
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            await self._conn.commit()
 
     async def disconnect(self) -> None:
         self._running = False
@@ -287,6 +303,17 @@ class SQLiteBackend(StorageBackend):
             return
         await self._conn.execute(
             "INSERT OR IGNORE INTO claims (queue_name, item_key, item_data) VALUES (?, ?, ?)",
+            (queue_name, item_key, item_data)
+        )
+        await self._conn.commit()
+
+    async def enqueue_claimed_item(self, queue_name: str, item_key: str, item_data: str) -> None:
+        """Insert a claim already in 'claimed' state — combines enqueue + claim into one commit."""
+        if not self._running:
+            return
+        await self._conn.execute(
+            """INSERT OR IGNORE INTO claims (queue_name, item_key, item_data, status, claimed_at)
+               VALUES (?, ?, ?, 'claimed', datetime('now'))""",
             (queue_name, item_key, item_data)
         )
         await self._conn.commit()
@@ -480,3 +507,16 @@ class SQLiteBackend(StorageBackend):
             return None
         columns = [desc[0] for desc in cursor.description]
         return dict(zip(columns, row))
+
+    async def cleanup_claims(self, max_age_hours: int = 24) -> int:
+        """Remove completed/failed claims older than max_age_hours. Returns deleted count."""
+        if not self._conn:
+            await self.connect()
+        cursor = await self._conn.execute(
+            """DELETE FROM claims
+               WHERE status IN ('done', 'failed')
+               AND created_at < datetime('now', ?)""",
+            (f"-{max_age_hours} hours",),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
