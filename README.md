@@ -5,12 +5,14 @@ Massive IP camera discovery, fingerprinting, and vulnerability assessment pipeli
 ## Architecture
 
 ```
-CIDR Input → Layer 1 (Masscan) → Durable Queue → Layer 2 (Fingerprinter) → Queue → [Layer 3 — future]
+DB Targets → Layer 1 (Masscan) → Durable Queue → Layer 2 (Fingerprinter) → Queue → [Layer 3 — future]
 ```
+
+Targets (CIDRs, IPs, ranges) are stored in the database and managed via Discord commands. Masscan output can also be imported directly for standalone Layer 2 fingerprinting.
 
 ### Layer 1 — Port Discovery
 
-Masscan-based port scanner. Takes CIDR ranges and a port list, scans at a configurable rate (packets/sec), and outputs discovered `ip:port` pairs into a durable SQLite-backed queue. Supports pause/resume — interrupted scans pick up where they left off.
+Masscan-based port scanner. Takes targets from the database, scans at a configurable rate (packets/sec), and outputs discovered `ip:port` pairs into a durable SQLite-backed queue. Supports pause/resume — interrupted scans pick up where they left off via `paused.conf`.
 
 ### Layer 2 — Device Fingerprinting
 
@@ -20,11 +22,11 @@ Multi-protocol fingerprinter with a three-phase pipeline:
 (ip, port) → Collect → Match → Resolve → Fingerprint
 ```
 
-**Collect** — Five probers fetch raw data from each target. No signature logic here — they just gather bytes.
+**Collect** — Five probers fetch raw data from each target concurrently. Sessions are reused across probes. No signature logic here — they just gather bytes.
 
 | Prober | What it does |
 |--------|-------------|
-| HTTP | GET `/` for HTML + headers, then probes signature-defined endpoint paths |
+| HTTP | GET `/` for HTML + headers, then probes signature-defined endpoints concurrently |
 | HTTPS | Same as HTTP over TLS, also extracts SSL certificate subject |
 | RTSP | DESCRIBE on signature-defined and generic RTSP paths |
 | ONVIF | SOAP GetDeviceInformation request |
@@ -46,14 +48,16 @@ Multi-protocol fingerprinter with a three-phase pipeline:
 Patterns support `case_sensitive` mode and CVE annotations per match.
 
 **Resolve** — The aggregator picks the best fingerprint from all matches:
-- **Vendor**: majority vote (requires at least one brand/favicon/ONVIF match)
+- **Vendor**: majority vote with total match count as tiebreaker (requires at least one brand/favicon/ONVIF match)
 - **Model/version**: longest value wins (most specific)
 - **CVEs**: union across all matching patterns
 - All evidence is preserved for auditability
 
+Concurrency is controlled by a semaphore acquired *before* task creation, ensuring the configured max_concurrent limit is actually enforced.
+
 ### Durable Queue
 
-SQLite-backed claim system between layers. Items move through `pending → claimed → done/failed`. Crashed or stopped scans recover automatically on restart — unclaimed items are reprocessed.
+SQLite-backed claim system between layers. Items move through `pending → claimed → done/failed`. On enqueue, items are inserted directly as `claimed` to avoid a separate claim step. Crashed or stopped scans recover automatically on restart — unclaimed items are reprocessed. Old completed/failed claims are cleaned up periodically.
 
 ### Signatures
 
@@ -88,16 +92,7 @@ layers:
     signatures_dir: config/signatures
 ```
 
-### 4. CIDR ranges
-
-Put target CIDR ranges in `data/cidrs.txt`, one per line:
-
-```
-192.168.0.0/16
-10.0.0.0/8
-```
-
-### 5. Ports
+### 4. Ports
 
 Put target ports in `data/ports.txt`, one per line:
 
@@ -109,7 +104,7 @@ Put target ports in `data/ports.txt`, one per line:
 8554
 ```
 
-### 6. Discord bot
+### 5. Discord bot
 
 Create a `.env` file:
 
@@ -148,34 +143,46 @@ Every command group has a `/<group> help` subcommand showing full usage details.
 
 | Command | Description |
 |---------|-------------|
-| `/scan start` | Start or resume the scan pipeline |
-| `/scan pause` | Pause scan (resumable) |
-| `/scan stop` | Stop scan (fresh start next time) |
-| `/scan progress` | Live stats: IPs scanned, discovered, fingerprinted |
-| `/scan help` | Show detailed help for scan commands |
+| `/scan start` | Start or resume the scan pipeline. Requires targets or staged masscan import |
+| `/scan pause` | Pause scan (waits for full pipeline stop, resumable) |
+| `/scan stop` | Stop scan and delete paused.conf (fresh start next time) |
+| `/scan progress` | Live stats: IPs scanned, discovered, fingerprinted, queue depth |
+
+### Targets
+
+| Command | Description |
+|---------|-------------|
+| `/target add <target>` | Add IP, CIDR, or IP range (e.g. `192.168.1.0/24`) |
+| `/target remove <id>` | Remove target by ID |
+| `/target list [type]` | List all targets with pagination (works during scan) |
+| `/target import <file>` | Bulk import targets from text file |
+| `/target export` | Export targets to `data/cidrs.txt` |
+| `/target clear` | Remove all targets (with confirmation) |
+| `/target import-masscan <file>` | Import masscan `-oL` output for standalone fingerprinting |
+
+Target commands (except list) require scan to be idle. Masscan import stages a file — use `/scan start` to begin Layer 2-only fingerprinting.
 
 ### Runtime Config
 
 | Command | Description |
 |---------|-------------|
 | `/config show` | Display current parameters |
-| `/config scan_rate <n>` | Set packets/sec (next scan) |
-| `/config max_concurrent <n>` | Set max concurrent probes (next scan) |
-| `/config batch_size <n>` | Set DB write batch size (next scan) |
-| `/config help` | Show detailed help for config commands |
+| `/config scan_rate <n>` | Set packets/sec (applies on next scan) |
+| `/config max_concurrent <n>` | Set max concurrent probes (applies on next scan) |
+| `/config batch_size <n>` | Set DB write batch size (applies on next scan) |
 
 ### Fingerprint Signatures
 
 | Command | Description |
 |---------|-------------|
-| `/signature list [vendor]` | List signature counts for a vendor (dropdown if no vendor) |
+| `/signature list [vendor]` | List signature counts (dropdown if no vendor) |
 | `/signature show <vendor> [type]` | Show pattern details, paginated |
-| `/signature add` | Opens popup form to add a new signature |
-| `/signature remove <vendor> <type> <index>` | Remove a pattern (with confirmation) |
+| `/signature test` | Test regex against sample text before adding |
+| `/signature add` | Preview form with test/confirm/cancel buttons |
+| `/signature remove <vendor> <type> <index>` | Remove pattern (with confirmation) |
 | `/signature export <vendor>` | Export vendor YAML as file attachment |
 | `/signature import <file>` | Import signatures from YAML file |
 | `/signature reload` | Reload all YAML from disk |
-| `/signature help` | Show detailed help for signature commands |
 
 ### PoC Scripts
 
@@ -186,7 +193,6 @@ Every command group has a `/<group> help` subcommand showing full usage details.
 | `/poc list [vendor:...]` | List PoCs, optional vendor filter |
 | `/poc show id:<n>` | Full details with script |
 | `/poc remove id:<n>` | Delete PoC |
-| `/poc help` | Show detailed help for PoC commands |
 
 ### Password Dictionaries
 
@@ -197,19 +203,8 @@ Every command group has a `/<group> help` subcommand showing full usage details.
 | `/dict show dict_type:...` | Show entries of a type |
 | `/dict list` | List all dict types with counts |
 | `/dict remove id:<n>` | Delete entry |
-| `/dict help` | Show detailed help for dict commands |
 
 Dict types: `default_usernames`, `default_passwords`, `default_creds` (user:pass pairs), or any custom name.
-
-### Targets
-
-| Command | Description |
-|---------|-------------|
-| `/target add name:... [vendor] [category] [aliases]` | Add target |
-| `/target list [vendor:...]` | List targets |
-| `/target show id:<n>` | Full details |
-| `/target remove id:<n>` | Delete target |
-| `/target help` | Show detailed help for target commands |
 
 ## Storage
 
@@ -223,7 +218,7 @@ SQLite with WAL mode. Single writer coroutine for safe concurrent writes.
 | `claims` | Durable queue state (pending/claimed/done/failed) |
 | `pocs` | PoC scripts |
 | `dicts` | Password/credential dictionaries |
-| `targets` | Known camera/NVR/DVR models |
+| `targets` | Scan inputs — IPs, CIDRs, IP ranges |
 
 ## Project Structure
 
@@ -240,19 +235,19 @@ config/
     vivotek.yaml
     ...
 data/
-  cidrs.txt                     # CIDR ranges to scan
   ports.txt                     # Ports to scan
+  masscan_import.txt            # Staged masscan import (created by /target import-masscan)
   camera_scan.db                # SQLite database
 src/
   bot/
     bot.py                      # ScanBot class, pipeline lifecycle
     scan.py                     # /scan commands
     config.py                   # /config commands
-    signature.py                # /signature commands (modal, dropdown, pagination)
+    signature.py                # /signature commands (modal, test, preview, pagination)
     poc.py                      # /poc commands
     dict.py                     # /dict commands
-    target.py                   # /target commands
-    common.py                   # Shared utilities
+    target.py                   # /target commands (scan inputs, masscan import)
+    common.py                   # Shared utilities (PaginatedView, ConfirmView, safe_send)
   core/
     config.py                   # YAML config loader
     interfaces.py               # Abstract interfaces
@@ -268,13 +263,13 @@ src/
         schema.py               # Pydantic models for YAML signatures
         loader.py               # YAML loader + hot-reload + CRUD
       probers/
-        http_prober.py          # HTTP: root page, headers, endpoint probes
-        https_prober.py         # HTTPS: same + SSL cert extraction
+        http_prober.py          # HTTP: root page, headers, concurrent endpoint probes
+        https_prober.py         # HTTPS: same + SSL cert extraction (async)
         rtsp_prober.py          # RTSP: DESCRIBE on signature paths
         onvif_prober.py         # ONVIF: SOAP GetDeviceInformation
-        favicon_prober.py       # Favicon MMH3 hash
+        favicon_prober.py       # Favicon MMH3 hash (reused sessions)
         types.py                # CollectedData model
-        base.py                 # Prober ABC
+        base.py                 # Prober ABC with close()
   pipeline/
     builder.py                  # Pipeline construction + lifecycle
   storage/
@@ -282,7 +277,7 @@ src/
     sqlite_backend.py           # SQLite implementation
     schemas.py                  # Pydantic models (Fingerprint, EvidenceItem, etc.)
   utils/
-    network.py                  # IP counting, CIDR/range parsing
+    network.py                  # IP counting, CIDR/range parsing, target classification
     logging.py                  # Logger setup
 tests/
   test_engine.py                # Engine, resolver, normalization tests
@@ -296,3 +291,5 @@ tests/
 - The persistent DB (`self.bot.db`) is initialized on bot startup — `/poc`, `/dict`, `/target` commands work without running a scan
 - The pipeline creates a separate DB connection for scan writes, which is disconnected when the scan stops
 - Signatures hot-reload every 30 seconds — edit YAML files in `config/signatures/` and they take effect without restarting
+- Masscan import mode runs Layer 2 only — no masscan subprocess, no root required
+- `/scan pause` waits for the full pipeline to stop before responding so the user knows it's safe to modify targets
