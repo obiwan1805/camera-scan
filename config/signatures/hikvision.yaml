@@ -25,7 +25,10 @@ brand_keywords:
 - pattern: HIKVISION
   scope:
   - headers
-- pattern: webserver
+- pattern: App/WebServer/
+  scope:
+  - headers
+- pattern: HIKVISION
   scope:
   - headers
 - pattern: DVRDVS
@@ -37,11 +40,6 @@ brand_keywords:
 - pattern: Digital Video Recorder
   scope:
   - html
-- pattern: gb2312
-  scope:
-  - headers
-
-  # Web plugin identifiers
 - pattern: WebPlugin
   scope:
   - html
@@ -63,7 +61,6 @@ brand_keywords:
 - pattern: HikCentral
   scope:
   - html
-
 model_patterns:
 - regex: DS-2CD\d+[A-Za-z\d-]*
   scope:
@@ -110,8 +107,6 @@ model_patterns:
   scope:
   - xml_text
   group: 1
-
-  # Web plugin model extraction
 - regex: webPlugin[_\s]*(\d+[\d.]*)\.(exe|cab|dll|pkg)
   scope:
   - html
@@ -124,7 +119,6 @@ model_patterns:
   scope:
   - html
   group: 1
-
 version_patterns:
 - regex: <firmwareVersion>(.*?)</firmwareVersion>
   scope:
@@ -164,6 +158,10 @@ version_patterns:
   scope:
   - html
   group: 1
+- regex: <firmwareVersion>(.*?)</firmwareVersion>
+  scope:
+  - html
+  - xml_text
 endpoint_probes:
 - path: /ISAPI/System/deviceInfo
   protocol:
@@ -220,8 +218,6 @@ endpoint_probes:
   - http
   - https
   content_type: xml
-
-  # Web plugin endpoints
 - path: /web_plugin
   protocol:
   - http

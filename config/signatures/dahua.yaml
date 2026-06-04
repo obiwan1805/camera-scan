@@ -49,7 +49,7 @@ brand_keywords:
     scope: [html]
     cves: []
   - pattern: "WEB SERVICE"
-    scope: [html]
+    scope: [html, headers]
     cves: []
   - pattern: "rpcCore"
     scope: [html]
