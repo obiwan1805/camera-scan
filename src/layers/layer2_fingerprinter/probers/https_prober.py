@@ -11,8 +11,9 @@ from src.storage.schemas import RawResponse
 class HTTPSProber(Prober):
     """Collects data via HTTPS with SSL cert extraction."""
 
-    def __init__(self, endpoint_paths: Optional[set[str]] = None):
+    def __init__(self, endpoint_paths: Optional[set[str]] = None, timeout: int = 10):
         self._endpoint_paths = endpoint_paths or set()
+        self._timeout = timeout
         self._session: Optional[aiohttp.ClientSession] = None
 
     def set_endpoints(self, paths: set[str]) -> None:
@@ -26,7 +27,7 @@ class HTTPSProber(Prober):
             connector = aiohttp.TCPConnector(ssl=ssl_context)
             self._session = aiohttp.ClientSession(
                 connector=connector,
-                timeout=aiohttp.ClientTimeout(total=5),
+                timeout=aiohttp.ClientTimeout(total=self._timeout),
             )
         return self._session
 
@@ -92,7 +93,7 @@ class HTTPSProber(Prober):
             async with sem:
                 try:
                     url = f"https://{ip}:{port}{path}"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=self._timeout)) as resp:
                         if resp.status != 200:
                             return
                         content = await resp.text()
@@ -128,7 +129,7 @@ class HTTPSProber(Prober):
 
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port, ssl=ssl_context),
-                timeout=3,
+                timeout=self._timeout,
             )
             ssl_object = writer.get_extra_info("ssl_object")
             cert = ssl_object.getpeercert() if ssl_object else None

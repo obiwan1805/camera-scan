@@ -11,8 +11,9 @@ from src.utils.logging import setup_logger
 class HTTPProber(Prober):
     """Collects data via HTTP: main page, headers, and all signature endpoint probes."""
 
-    def __init__(self, endpoint_paths: Optional[set[str]] = None):
+    def __init__(self, endpoint_paths: Optional[set[str]] = None, timeout: int = 10):
         self._endpoint_paths = endpoint_paths or set()
+        self._timeout = timeout
         self._logger = setup_logger("HTTPProber")
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -22,7 +23,7 @@ class HTTPProber(Prober):
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
+                timeout=aiohttp.ClientTimeout(total=self._timeout)
             )
         return self._session
 
@@ -84,7 +85,7 @@ class HTTPProber(Prober):
             async with sem:
                 try:
                     url = f"http://{ip}:{port}{path}"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=self._timeout)) as resp:
                         if resp.status != 200:
                             return
                         content = await resp.text()

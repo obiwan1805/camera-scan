@@ -12,7 +12,8 @@ _DEFAULT_RTSP_PATHS = ["/stream1", "/live", "/h264", "/"]
 class RTSPProber(Prober):
     """Collects RTSP banner data from DESCRIBE and OPTIONS requests."""
 
-    def __init__(self, extra_paths: Optional[List[str]] = None):
+    def __init__(self, extra_paths: Optional[List[str]] = None, timeout: int = 10):
+        self._timeout = timeout
         self._paths = list(_DEFAULT_RTSP_PATHS)
         if extra_paths:
             seen = set(self._paths)
@@ -38,7 +39,7 @@ class RTSPProber(Prober):
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
-                timeout=3
+                timeout=self._timeout
             )
 
             request = (
@@ -50,7 +51,7 @@ class RTSPProber(Prober):
             writer.write(request.encode())
             await writer.drain()
 
-            response = await asyncio.wait_for(reader.read(2048), timeout=3)
+            response = await asyncio.wait_for(reader.read(2048), timeout=self._timeout)
             writer.close()
             await writer.wait_closed()
 
@@ -72,7 +73,7 @@ class RTSPProber(Prober):
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port),
-                timeout=3
+                timeout=self._timeout
             )
 
             request = (

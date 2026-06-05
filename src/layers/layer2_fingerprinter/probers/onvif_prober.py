@@ -25,7 +25,8 @@ _SOAP_REQUEST = '''<?xml version="1.0" encoding="utf-8"?>
 class ONVIFProber(Prober):
     """Collects ONVIF SOAP GetDeviceInformation responses."""
 
-    def __init__(self):
+    def __init__(self, timeout: int = 10):
+        self._timeout = timeout
         self._logger = setup_logger("ONVIFProber")
 
     async def probe(self, ip: str, port: int, collected: CollectedData) -> CollectedData:
@@ -55,7 +56,7 @@ class ONVIFProber(Prober):
 
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port, ssl=ssl_ctx),
-                timeout=3
+                timeout=self._timeout
             )
 
             soap = (
@@ -72,7 +73,7 @@ class ONVIFProber(Prober):
             writer.write(soap.encode())
             await writer.drain()
 
-            response = await asyncio.wait_for(reader.read(4096), timeout=3)
+            response = await asyncio.wait_for(reader.read(4096), timeout=self._timeout)
             writer.close()
             await writer.wait_closed()
 

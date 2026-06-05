@@ -123,6 +123,7 @@ class PortScanner(Scanner):
                 "--output-flush",
                 "--status",
                 "--rate", str(self.config.scan_rate),
+                "--wait", str(self.config.wait),
             ]
             self.logger.info(f"Resuming masscan from paused.conf (total IPs: {self._total_ips:,})")
         else:
@@ -142,7 +143,8 @@ class PortScanner(Scanner):
                 "-oL", str(output_path),
                 "--output-flush",
                 "--status",
-                "--rate", str(self.config.scan_rate)
+                "--rate", str(self.config.scan_rate),
+                "--wait", str(self.config.wait),
             ]
             cmd.extend(["-p", ports])
             cmd.extend(cidr_list)

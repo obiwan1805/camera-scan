@@ -4,12 +4,16 @@ layers:
     batch_size: 10
     backpressure: block
     masscan_path: masscan
-    scan_rate: 5000
+    scan_rate: 1000
+    wait: 15              # seconds masscan waits per probe for a response
     output_file: data/scans/results.txt
 
   layer2:
     worker_pool:
       max_concurrent: 200
+    prober_timeout: 15         # seconds per probe request (http, https, rtsp, onvif, favicon)
+    import_feed_batch: 50      # entries per feed batch during masscan import
+    import_feed_interval: 5     # seconds between feed batches
     modules:
       - favicon
       - http

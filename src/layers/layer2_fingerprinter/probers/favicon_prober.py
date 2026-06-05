@@ -19,14 +19,15 @@ _FAVICON_PATHS = [
 class FaviconProber(Prober):
     """Collects favicon MMH3 hash for signature matching."""
 
-    def __init__(self):
+    def __init__(self, timeout: int = 10):
+        self._timeout = timeout
         self._http_session: Optional[aiohttp.ClientSession] = None
         self._https_session: Optional[aiohttp.ClientSession] = None
 
     async def _get_http_session(self) -> aiohttp.ClientSession:
         if self._http_session is None or self._http_session.closed:
             self._http_session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=3)
+                timeout=aiohttp.ClientTimeout(total=self._timeout)
             )
         return self._http_session
 
@@ -38,7 +39,7 @@ class FaviconProber(Prober):
             connector = aiohttp.TCPConnector(ssl=ctx)
             self._https_session = aiohttp.ClientSession(
                 connector=connector,
-                timeout=aiohttp.ClientTimeout(total=3),
+                timeout=aiohttp.ClientTimeout(total=self._timeout),
             )
         return self._https_session
 
