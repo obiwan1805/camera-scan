@@ -190,15 +190,22 @@ class SQLiteBackend(StorageBackend):
 
         try:
             for collection, items in by_collection.items():
-                if collection == "port_scans":
-                    await self._write_port_scans(items)
-                elif collection == "fingerprints":
-                    await self._write_fingerprints(items)
-                elif collection == "raw_responses":
-                    await self._write_raw_responses(items)
+                try:
+                    if collection == "port_scans":
+                        await self._write_port_scans(items)
+                    elif collection == "fingerprints":
+                        await self._write_fingerprints(items)
+                    elif collection == "raw_responses":
+                        await self._write_raw_responses(items)
+                except Exception as e:
+                    sample = items[0] if items else None
+                    types = type(sample).__name__ if sample else "?"
+                    if hasattr(sample, '__dict__'):
+                        types += " fields: " + str({k: type(v).__name__ for k, v in sample.__dict__.items()})
+                    self._logger.error(f"Write failed for {collection} ({len(items)} items, type={types}): {e}")
             await self._conn.commit()
         except Exception as e:
-            self._logger.error(f"Batch write failed ({len(batch)} items): {e}")
+            self._logger.error(f"Batch commit failed ({len(batch)} items): {e}")
 
     async def _write_port_scans(self, items: list[PortScanResult]) -> None:
         rows = [
@@ -218,7 +225,7 @@ class SQLiteBackend(StorageBackend):
                 item.port,
                 item.timestamp.isoformat(),
                 item.status,
-                item.fingerprint.model_dump_json(),
+                str(item.fingerprint.model_dump_json()),
                 item.weight
             )
             for item in items if isinstance(item, CameraFingerprint)
@@ -230,18 +237,19 @@ class SQLiteBackend(StorageBackend):
             )
 
     async def _write_raw_responses(self, items: list[RawResponse]) -> None:
-        rows = [
-            (
-                item.ip,
-                item.port,
-                item.module,
-                item.endpoint,
-                item.status_code,
-                item.content_type,
-                item.truncated_data()
-            )
-            for item in items if isinstance(item, RawResponse)
-        ]
+        rows = []
+        for item in items:
+            if not isinstance(item, RawResponse):
+                continue
+            rows.append((
+                str(item.ip),
+                int(item.port),
+                str(item.module),
+                str(item.endpoint),
+                int(item.status_code) if item.status_code is not None else None,
+                str(item.content_type) if item.content_type is not None else None,
+                bytes(item.truncated_data()),
+            ))
         if rows:
             await self._conn.executemany(
                 "INSERT INTO raw_responses (ip, port, module, endpoint, status_code, content_type, raw_data) VALUES (?, ?, ?, ?, ?, ?, ?)",

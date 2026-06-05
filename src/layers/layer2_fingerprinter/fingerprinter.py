@@ -44,13 +44,14 @@ class Fingerprinter(Filter):
         # Build probers with signature-driven endpoints
         endpoints = self._loader.get_unique_endpoint_paths()
         rtsp_paths = self._loader.get_all_rtsp_paths()
+        timeout = getattr(config, 'prober_timeout', 10)
 
         self._probers = [
-            HTTPProber(endpoint_paths=endpoints),
-            HTTPSProber(endpoint_paths=endpoints),
-            RTSPProber(extra_paths=rtsp_paths),
-            ONVIFProber(),
-            FaviconProber(),
+            HTTPProber(endpoint_paths=endpoints, timeout=timeout),
+            HTTPSProber(endpoint_paths=endpoints, timeout=timeout),
+            RTSPProber(extra_paths=rtsp_paths, timeout=timeout),
+            ONVIFProber(timeout=timeout),
+            FaviconProber(timeout=timeout),
         ]
 
         # Progress counters
@@ -236,18 +237,6 @@ class Fingerprinter(Filter):
                     await self.storage.cleanup_claims(max_age_hours=24)
                 except Exception:
                     pass
-            rate = self._processed / elapsed if elapsed > 0 else 0
-            queue_size = self.input_queue.size()
-
-            self.logger.info(
-                f"[Progress] Processed: {self._processed} | "
-                f"Success: {self._successful} | "
-                f"Failed: {self._failed} | "
-                f"Skipped: {self._skipped} | "
-                f"Queue: {queue_size} | "
-                f"Active: {self._processing_count} | "
-                f"Rate: {rate:.1f}/s"
-            )
 
     async def _sig_watcher(self) -> None:
         """Periodically check for signature file changes and hot-reload."""

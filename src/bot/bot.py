@@ -77,8 +77,12 @@ class ScanBot(commands.Bot):
             config = get_default_config()
             if "scan_rate" in self._overrides:
                 config.layers.scan_rate = self._overrides["scan_rate"]
+            if "masscan_wait" in self._overrides:
+                config.layers.wait = self._overrides["masscan_wait"]
             if "max_concurrent" in self._overrides:
                 config.layer2.worker_pool.max_concurrent = self._overrides["max_concurrent"]
+            if "prober_timeout" in self._overrides:
+                config.layer2.prober_timeout = self._overrides["prober_timeout"]
             if "batch_size" in self._overrides:
                 config.layers.batch_size = self._overrides["batch_size"]
 
@@ -160,11 +164,16 @@ class ScanBot(commands.Bot):
             config = get_default_config()
             if "max_concurrent" in self._overrides:
                 config.layer2.worker_pool.max_concurrent = self._overrides["max_concurrent"]
-
-            max_backlog = config.layer2.worker_pool.max_concurrent * 2
+            if "prober_timeout" in self._overrides:
+                config.layer2.prober_timeout = self._overrides["prober_timeout"]
+            if "import_feed_batch" in self._overrides:
+                config.layer2.import_feed_batch = self._overrides["import_feed_batch"]
+            if "import_feed_interval" in self._overrides:
+                config.layer2.import_feed_interval = self._overrides["import_feed_interval"]
 
             builder = PipelineBuilder(config)
             self.storage = builder.build_storage()
+            await self.storage.connect()
             queues = builder.build_queues(self.storage)
 
             self.fingerprinter = Fingerprinter(
@@ -178,8 +187,10 @@ class ScanBot(commands.Bot):
             self._status = "running"
             self._stop_signal = False
 
-            # Feed from file — batch of 10 with backpressure, same as _watch_and_feed
+            # Feed from file using configured batch/interval
             from src.layers import PortScanner
+            feed_batch = config.layer2.import_feed_batch
+            feed_interval = config.layer2.import_feed_interval
             batch = []
             total_fed = 0
             with open(import_path) as f:
@@ -190,7 +201,7 @@ class ScanBot(commands.Bot):
                     if result:
                         ip, port = result
                         batch.append((ip, port))
-                        if len(batch) >= 10:
+                        if len(batch) >= feed_batch:
                             if self.storage:
                                 from src.storage.schemas import PortScanResult
                                 await self.storage.submit("port_scans", [
@@ -200,10 +211,8 @@ class ScanBot(commands.Bot):
                                 await queues[0].put(item)
                             total_fed += len(batch)
                             batch = []
-
-                        # Backpressure: wait if queue is too deep
-                        while queues[0].size() > max_backlog and not self._stop_signal:
-                            await asyncio.sleep(0.5)
+                            if not self._stop_signal:
+                                await asyncio.sleep(feed_interval)
 
             # Flush remaining
             if batch:
@@ -310,14 +319,27 @@ class ScanBot(commands.Bot):
     def _build_config_embed(self) -> discord.Embed:
         defaults = get_default_config()
         scan_rate = self._overrides.get("scan_rate", defaults.layers.scan_rate)
+        masscan_wait = self._overrides.get("masscan_wait", defaults.layers.wait)
         max_concurrent = self._overrides.get("max_concurrent", defaults.layer2.worker_pool.max_concurrent)
-        batch_size = self._overrides.get("batch_size", defaults.layers.batch_size)
+        prober_timeout = self._overrides.get("prober_timeout", defaults.layer2.prober_timeout)
+        feed_batch = self._overrides.get("import_feed_batch", defaults.layer2.import_feed_batch)
+        feed_interval = self._overrides.get("import_feed_interval", defaults.layer2.import_feed_interval)
 
         embed = discord.Embed(title="Current Config", color=0x57F287)
-        lines = (
+
+        layer1 = (
             f"scan_rate:      {scan_rate:,} pps\n"
-            f"max_concurrent: {max_concurrent}\n"
-            f"batch_size:     {batch_size}"
+            f"masscan_wait:   {masscan_wait}s"
         )
-        embed.add_field(name="Parameters", value=f"```\n{lines}\n```", inline=False)
+        embed.add_field(name="Layer 1 — Masscan", value=f"```\n{layer1}\n```", inline=False)
+
+        layer2 = (
+            f"max_concurrent:       {max_concurrent}\n"
+            f"prober_timeout:       {prober_timeout}s\n"
+            f"import_feed_batch:    {feed_batch}\n"
+            f"import_feed_interval: {feed_interval}s"
+        )
+        embed.add_field(name="Layer 2 — Fingerprinter", value=f"```\n{layer2}\n```", inline=False)
+
+        embed.set_footer(text="All values apply on next /scan start")
         return embed
