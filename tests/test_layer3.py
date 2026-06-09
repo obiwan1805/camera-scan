@@ -56,3 +56,61 @@ class TestLayer3Config:
         assert config.layer3.enabled is True
         assert config.layer3.nvd.rate_limit == 50
         assert config.layer3.msf.host == "127.0.0.1"
+
+
+class TestNVDResultCache:
+    def test_empty_cache_miss(self):
+        from src.layers.layer3_cve_searcher.cache import NVDResultCache
+        cache = NVDResultCache()
+        assert cache.get("hikvision", "DS-2CD2142", "V5.4.5") is None
+
+    def test_cache_put_and_get(self):
+        from src.layers.layer3_cve_searcher.cache import NVDResultCache
+        from src.storage.schemas import CVEEntry
+        cache = NVDResultCache()
+        entries = [CVEEntry(cve_id="CVE-2021-36260", severity="CRITICAL")]
+        cache.put("hikvision", "DS-2CD2142", "V5.4.5", entries)
+        result = cache.get("hikvision", "DS-2CD2142", "V5.4.5")
+        assert len(result) == 1
+        assert result[0].cve_id == "CVE-2021-36260"
+
+    def test_cache_different_key_miss(self):
+        from src.layers.layer3_cve_searcher.cache import NVDResultCache
+        from src.storage.schemas import CVEEntry
+        cache = NVDResultCache()
+        cache.put("hikvision", "DS-2CD2142", "V5.4.5", [CVEEntry(cve_id="CVE-2021-36260")])
+        assert cache.get("hikvision", "DS-2CD2142", "V5.4.6") is None
+
+
+class TestMSFModuleCache:
+    def test_empty_cache_miss(self):
+        from src.layers.layer3_cve_searcher.cache import MSFModuleCache
+        cache = MSFModuleCache()
+        assert cache.get("hikvision") is None
+
+    def test_cache_put_and_get(self):
+        from src.layers.layer3_cve_searcher.cache import MSFModuleCache
+        cache = MSFModuleCache()
+        modules = [{"name": "exploit/linux/http/hikvision_cmd_injection", "type": "exploit", "cves": ["CVE-2021-36260"]}]
+        cache.put("hikvision", modules)
+        result = cache.get("hikvision")
+        assert len(result) == 1
+        assert result[0]["cves"] == ["CVE-2021-36260"]
+
+    def test_find_module_for_cve(self):
+        from src.layers.layer3_cve_searcher.cache import MSFModuleCache
+        cache = MSFModuleCache()
+        modules = [
+            {"name": "exploit/linux/http/hikvision_cmd_injection", "type": "exploit", "cves": ["CVE-2021-36260"]},
+            {"name": "auxiliary/scanner/http/hikvision_default_creds", "type": "auxiliary", "cves": ["CVE-2017-7921"]},
+        ]
+        cache.put("hikvision", modules)
+        result = cache.find_module_for_cve("hikvision", "CVE-2021-36260")
+        assert result["name"] == "exploit/linux/http/hikvision_cmd_injection"
+
+    def test_find_module_for_cve_miss(self):
+        from src.layers.layer3_cve_searcher.cache import MSFModuleCache
+        cache = MSFModuleCache()
+        modules = [{"name": "exploit/...", "type": "exploit", "cves": ["CVE-2021-36260"]}]
+        cache.put("hikvision", modules)
+        assert cache.find_module_for_cve("hikvision", "CVE-2099-9999") is None
