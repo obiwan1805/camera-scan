@@ -343,3 +343,33 @@ class TestWeightRouter:
             fingerprint=Fingerprint(),
         )
         assert router.classify(item) == "skip"
+
+
+class TestCVESearcher:
+    @pytest.fixture
+    def searcher(self):
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig())
+        return CVESearcher(config)
+
+    def test_init_creates_components(self, searcher):
+        assert searcher._router is not None
+        assert searcher._target_semaphore._value == 200
+        assert searcher._module_semaphore._value == 32
+
+    @pytest.mark.asyncio
+    async def test_process_skip_no_vendor(self, searcher):
+        """Targets without vendor should be returned unchanged."""
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+        result = await searcher.process(item)
+        assert result is not None
+        assert result.fingerprint.cves == []
+
+    @pytest.mark.asyncio
+    async def test_processing_count(self, searcher):
+        assert searcher._processing_count == 0
