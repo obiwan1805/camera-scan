@@ -126,9 +126,10 @@ class ScanBot(commands.Bot):
                 )
                 stop_event.cancel()
 
-            # Wait for fingerprinter to drain the queue OR stop signal
-            while (queues[0].size() > 0 and self.fingerprinter._running
-                   and not self._stop_signal):
+            # Wait for fingerprinter to drain queue AND finish in-flight tasks
+            while self.fingerprinter._running and not self._stop_signal:
+                if queues[0].size() == 0 and self.fingerprinter._processing_count == 0:
+                    break
                 await asyncio.sleep(1)
 
         except asyncio.CancelledError:
@@ -231,7 +232,7 @@ class ScanBot(commands.Bot):
             while self.fingerprinter._running and not self._stop_signal:
                 if queues[0].size() == 0 and self.fingerprinter._processing_count == 0:
                     break
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
 
         except asyncio.CancelledError:
             pass

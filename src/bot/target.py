@@ -202,6 +202,7 @@ class TargetGroup(app_commands.Group):
         storage = self.bot.db
         added = 0
         errors = 0
+        total_ips = 0
         for line in text.strip().split("\n"):
             entry = line.strip()
             if not entry or entry.startswith("#"):
@@ -213,10 +214,14 @@ class TargetGroup(app_commands.Group):
                     "type": target_type,
                 })
                 added += 1
+                if target_type == "range":
+                    total_ips += count_ips_in_range(entry)
+                else:
+                    total_ips += count_ips_in_cidr(entry)
             except Exception:
                 errors += 1
 
-        msg = f"Imported **{added}** targets"
+        msg = f"Imported **{added}** targets ({total_ips:,} IPs)"
         if errors:
             msg += f" ({errors} duplicates/errors skipped)"
         await safe_send(interaction, content=msg)

@@ -2,6 +2,8 @@
 
 Massive IP camera discovery, fingerprinting, and vulnerability assessment pipeline with a Discord bot interface.
 
+Tested with **masscan 1.3.2-241-g94e118c** (built from source on Ubuntu 22.04, gcc 11.4.0).
+
 ## Architecture
 
 ```
@@ -22,7 +24,7 @@ Multi-protocol fingerprinter with a three-phase pipeline:
 (ip, port) → Collect → Match → Resolve → Fingerprint
 ```
 
-**Collect** — Five probers fetch raw data from each target concurrently. Sessions are reused across probes. No signature logic here — they just gather bytes.
+**Collect** — Five probers fetch raw data from each target concurrently. Sessions are reused across probes.
 
 | Prober | What it does |
 |--------|-------------|
@@ -51,6 +53,7 @@ Patterns support `case_sensitive` mode and CVE annotations per match.
 - **Vendor**: majority vote with total match count as tiebreaker (requires at least one brand/favicon/ONVIF match)
 - **Model/version**: longest value wins (most specific)
 - **CVEs**: union across all matching patterns
+- **Weight**: calculated from evidence quality (distinct vendor sources, model/version extraction). More sources = higher confidence. Range: 0.3–1.0
 - All evidence is preserved for auditability
 
 Concurrency is controlled by a semaphore acquired *before* task creation, ensuring the configured max_concurrent limit is actually enforced.
@@ -65,11 +68,25 @@ Defined per vendor as YAML files in `config/signatures/`. Adding a new vendor or
 
 ## Setup
 
-### 1. Install masscan
+### 1. Build masscan from source
+
+The `apt` version is often outdated. Building from source ensures you have the latest features and bug fixes.
 
 ```bash
 sudo apt update
-sudo apt install masscan
+sudo apt install -y git gcc make libpcap-dev
+
+git clone https://github.com/robertdavidgraham/masscan.git
+cd masscan
+make -j$(nproc)
+sudo cp bin/masscan /usr/local/bin/
+```
+
+Verify:
+
+```
+$ masscan --version
+Masscan version 1.3.2-241-g94e118c
 ```
 
 ### 2. Install Python dependencies
@@ -84,13 +101,19 @@ Edit `config/default.yaml`:
 
 ```yaml
 layers:
-  scan_rate: 5000          # packets per second
-  output_file: data/scans/results.txt
+  layer1:
+    scan_rate: 1000        # packets per second
+    wait: 15               # seconds masscan waits per probe
   layer2:
     worker_pool:
       max_concurrent: 200  # concurrent fingerprint probes
+    prober_timeout: 15     # seconds per prober request
+    import_feed_batch: 50  # entries per batch during masscan import
+    import_feed_interval: 5 # seconds between batches
     signatures_dir: config/signatures
 ```
+
+All of these can also be changed at runtime via `/config` Discord commands and are persisted to the YAML file.
 
 ### 4. Ports
 
@@ -167,16 +190,21 @@ Target commands (except list) require scan to be idle. Masscan import stages a f
 | Command | Description |
 |---------|-------------|
 | `/config show` | Display current parameters |
-| `/config scan_rate <n>` | Set packets/sec (applies on next scan) |
-| `/config max_concurrent <n>` | Set max concurrent probes (applies on next scan) |
-| `/config batch_size <n>` | Set DB write batch size (applies on next scan) |
+| `/config scan_rate <n>` | Set packets/sec (default 1,000) |
+| `/config masscan_wait <n>` | Set masscan per-probe timeout in seconds (default 10) |
+| `/config max_concurrent <n>` | Set max concurrent probes (default 200) |
+| `/config prober_timeout <n>` | Set prober request timeout in seconds (default 10) |
+| `/config import_feed_batch <n>` | Set batch size during masscan import (default 100) |
+| `/config import_feed_interval <n>` | Set seconds between batches (default 5) |
+
+All config changes are saved to `config/default.yaml` and apply on the next scan start.
 
 ### Fingerprint Signatures
 
 | Command | Description |
 |---------|-------------|
 | `/signature list [vendor]` | List signature counts (dropdown if no vendor) |
-| `/signature show <vendor> [type]` | Show pattern details, paginated |
+| `/signature show <vendor> [type]` | Show pattern details with previews, paginated |
 | `/signature test` | Test regex against sample text before adding |
 | `/signature add` | Preview form with test/confirm/cancel buttons |
 | `/signature remove <vendor> <type> <index>` | Remove pattern (with confirmation) |
@@ -213,7 +241,7 @@ SQLite with WAL mode. Single writer coroutine for safe concurrent writes.
 | Table | Purpose |
 |-------|---------|
 | `port_scans` | Discovered open ports (IP, port, status) |
-| `fingerprints` | Fingerprint results (vendor, model, evidence_items, CVEs) |
+| `fingerprints` | Fingerprint results (vendor, model, evidence_items, CVEs, weight) |
 | `raw_responses` | Raw HTTP/RTSP/ONVIF responses |
 | `claims` | Durable queue state (pending/claimed/done/failed) |
 | `pocs` | PoC scripts |
@@ -293,3 +321,4 @@ tests/
 - Signatures hot-reload every 30 seconds — edit YAML files in `config/signatures/` and they take effect without restarting
 - Masscan import mode runs Layer 2 only — no masscan subprocess, no root required
 - `/scan pause` waits for the full pipeline to stop before responding so the user knows it's safe to modify targets
+- Weight reflects evidence quality: 0.3 base + 0.15 per distinct vendor source + 0.1 for model + 0.1 for version, capped at 1.0

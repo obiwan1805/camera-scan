@@ -189,8 +189,8 @@ class PortScanner(Scanner):
                     chunk = f.read()
 
                     if not chunk:
-                        if self._masscan_done.is_set():
-                            break  # Masscan finished and file fully drained
+                        if self._proc and self._proc.returncode is not None:
+                            break  # Masscan exited and file fully drained
                         await asyncio.sleep(0.5)
                         continue
 
