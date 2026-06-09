@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from src.core.config import get_default_config
 from src.pipeline.builder import PipelineBuilder, Pipeline
-from src.layers import PortScanner, CIDRInputSource, Fingerprinter
+from src.layers import PortScanner, CIDRInputSource, Fingerprinter, CVESearcher
 from src.storage.sqlite_backend import SQLiteBackend
 from src.core.durable_queue import DurableQueue
 
@@ -33,6 +33,7 @@ class ScanBot(commands.Bot):
         self.pipeline: Pipeline | None = None
         self.scanner: PortScanner | None = None
         self.fingerprinter: Fingerprinter | None = None
+        self.cve_searcher: CVESearcher | None = None
         self.storage: SQLiteBackend | None = None
         self._scan_task: asyncio.Task | None = None
         self._status = "idle"
@@ -102,12 +103,23 @@ class ScanBot(commands.Bot):
                 storage=self.storage,
             )
 
+            layers = [self.scanner, self.fingerprinter]
+
+            if config.layer3.enabled:
+                self.cve_searcher = CVESearcher(
+                    config=config.layer3,
+                    input_queue=queues[1],
+                    output_queue=None,
+                    storage=self.storage,
+                )
+                layers.append(self.cve_searcher)
+
             rows = await self.db.generic_list("targets")
             targets = [r["target"] for r in rows]
             input_source = CIDRInputSource(targets)
 
             self.pipeline = Pipeline(
-                layers=[self.scanner, self.fingerprinter],
+                layers=layers,
                 queues=queues,
                 storage=self.storage,
                 input_source=input_source,
@@ -132,6 +144,13 @@ class ScanBot(commands.Bot):
                     break
                 await asyncio.sleep(1)
 
+            # Wait for CVE searcher to drain queue AND finish in-flight tasks
+            if self.cve_searcher and self.cve_searcher._running:
+                while not self._stop_signal:
+                    if queues[1].size() == 0 and self.cve_searcher._processing_count == 0:
+                        break
+                    await asyncio.sleep(2)
+
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -151,6 +170,7 @@ class ScanBot(commands.Bot):
             self.pipeline = None
             self.scanner = None
             self.fingerprinter = None
+            self.cve_searcher = None
             self.storage = None
             gc.collect()
 
@@ -312,6 +332,32 @@ class ScanBot(commands.Bot):
             embed.add_field(
                 name="Layer 2 — Fingerprinter",
                 value=f"```\n{layer2}\n```",
+                inline=False,
+            )
+
+        if self.cve_searcher:
+            cs = self.cve_searcher
+            processed = cs._processed
+            cve_found = cs._cve_found
+            skipped = cs._skipped
+            active = cs._processing_count
+            elapsed = (
+                asyncio.get_running_loop().time() - cs._start_time
+                if cs._start_time
+                else 0
+            )
+            rate = processed / elapsed if elapsed > 0 else 0
+
+            layer3_text = (
+                f"Processed:  {processed:,}\n"
+                f"CVE found:  {cve_found:,}\n"
+                f"Skipped:    {skipped:,}\n"
+                f"Active:     {active}\n"
+                f"Rate:       {rate:.1f}/s"
+            )
+            embed.add_field(
+                name="Layer 3 — CVE Searcher",
+                value=f"```\n{layer3_text}\n```",
                 inline=False,
             )
 
