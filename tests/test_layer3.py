@@ -114,3 +114,71 @@ class TestMSFModuleCache:
         modules = [{"name": "exploit/...", "type": "exploit", "cves": ["CVE-2021-36260"]}]
         cache.put("hikvision", modules)
         assert cache.find_module_for_cve("hikvision", "CVE-2099-9999") is None
+
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+class TestNVDClient:
+    @pytest.fixture
+    def nvd_config(self):
+        from src.core.config import NVDConfig
+        return NVDConfig(api_key="", rate_limit=50)
+
+    def test_build_search_query(self, nvd_config):
+        from src.layers.layer3_cve_searcher.clients.nvd_client import NVDClient
+        client = NVDClient(nvd_config)
+        params = client._build_search_params("Hikvision", "DS-2CD2142", "V5.4.5")
+        assert params["keywordSearch"] == "Hikvision DS-2CD2142"
+
+    def test_build_search_query_model_only(self, nvd_config):
+        from src.layers.layer3_cve_searcher.clients.nvd_client import NVDClient
+        client = NVDClient(nvd_config)
+        params = client._build_search_params("Dahua", "DH-IPC-HDW2431T", None)
+        assert params["keywordSearch"] == "Dahua DH-IPC-HDW2431T"
+
+    @pytest.mark.asyncio
+    async def test_search_cache_hit(self, nvd_config):
+        from src.layers.layer3_cve_searcher.clients.nvd_client import NVDClient
+        from src.layers.layer3_cve_searcher.cache import NVDResultCache
+        from src.storage.schemas import CVEEntry
+        client = NVDClient(nvd_config)
+        client._cache = NVDResultCache()
+        client._cache.put("hikvision", "ds-2cd2142", "v5.4.5",
+                          [CVEEntry(cve_id="CVE-2021-36260")])
+        result = await client.search("Hikvision", "DS-2CD2142", "V5.4.5")
+        assert len(result) == 1
+        assert result[0].cve_id == "CVE-2021-36260"
+
+    @pytest.mark.asyncio
+    async def test_parse_nvd_response(self, nvd_config):
+        from src.layers.layer3_cve_searcher.clients.nvd_client import NVDClient
+        client = NVDClient(nvd_config)
+        mock_response = {
+            "vulnerabilities": [
+                {
+                    "cve": {
+                        "id": "CVE-2021-36260",
+                        "descriptions": [{"lang": "en", "value": "Command injection in Hikvision web interface"}],
+                        "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}]},
+                        "weaknesses": [{"description": [{"value": "CWE-78"}]}],
+                    }
+                }
+            ]
+        }
+        entries = client._parse_response(mock_response)
+        assert len(entries) == 1
+        assert entries[0].cve_id == "CVE-2021-36260"
+        assert entries[0].severity == "CRITICAL"
+        assert entries[0].cvss_score == 9.8
+        assert entries[0].description == "Command injection in Hikvision web interface"
+
+    @pytest.mark.asyncio
+    async def test_enrich_returns_metadata(self, nvd_config):
+        from src.layers.layer3_cve_searcher.clients.nvd_client import NVDClient
+        client = NVDClient(nvd_config)
+        client._enrich_cache = {"CVE-2021-36260": {"severity": "CRITICAL", "cvss_score": 9.8, "description": "test"}}
+        result = await client.enrich(["CVE-2021-36260"])
+        assert len(result) == 1
+        assert result[0]["severity"] == "CRITICAL"
