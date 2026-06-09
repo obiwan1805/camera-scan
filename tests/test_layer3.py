@@ -373,3 +373,136 @@ class TestCVESearcher:
     @pytest.mark.asyncio
     async def test_processing_count(self, searcher):
         assert searcher._processing_count == 0
+
+
+class TestLayer3Integration:
+    @pytest.mark.asyncio
+    async def test_high_weight_enriches_cves(self):
+        """Full pipeline: weight=1.0 target gets CVE data via NVD."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, CVEEntry
+        from unittest.mock import AsyncMock, MagicMock
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig())
+        searcher = CVESearcher(config)
+
+        # Mock NVD client
+        searcher._nvd_client = AsyncMock()
+        searcher._nvd_client.search = AsyncMock(return_value=[
+            CVEEntry(cve_id="CVE-2021-36260", severity="CRITICAL", source="nvd"),
+        ])
+
+        # Mock MSF client
+        searcher._msf_client = AsyncMock()
+        searcher._msf_client.find_module_for_cve = MagicMock(return_value=None)
+
+        # Mock storage
+        storage = AsyncMock()
+        searcher.storage = storage
+
+        item = CameraFingerprint(
+            ip="192.168.1.1", port=80, weight=1.0,
+            fingerprint=Fingerprint(vendor="hikvision", model="DS-2CD2142", version="V5.4.5"),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        assert "CVE-2021-36260" in result.fingerprint.cves
+        assert storage.submit.call_count >= 1  # At least PoC submitted
+
+    @pytest.mark.asyncio
+    async def test_skip_no_vendor(self):
+        """No vendor → return unchanged, no API calls."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        from unittest.mock import AsyncMock
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig())
+        searcher = CVESearcher(config)
+        searcher._nvd_client = AsyncMock()
+        searcher._msf_client = AsyncMock()
+
+        item = CameraFingerprint(
+            ip="192.168.1.1", port=80, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        assert result.fingerprint.cves == []
+        searcher._nvd_client.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_low_weight_uses_msf(self):
+        """weight<1.0 → MSF strategy used."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        from unittest.mock import AsyncMock, MagicMock
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig())
+        searcher = CVESearcher(config)
+        searcher._nvd_client = AsyncMock()
+        searcher._nvd_client.enrich = AsyncMock(return_value=[])
+        searcher._msf_client = AsyncMock()
+        searcher._msf_client.search_modules = AsyncMock(return_value=[
+            {"name": "exploit/.../test", "type": "exploit", "cves": ["CVE-2021-36260"]},
+        ])
+        searcher._msf_client.check = AsyncMock(return_value={
+            "status": "vulnerable", "cves": ["CVE-2021-36260"],
+        })
+        storage = AsyncMock()
+        searcher.storage = storage
+
+        item = CameraFingerprint(
+            ip="192.168.1.1", port=80, weight=0.7,
+            fingerprint=Fingerprint(vendor="hikvision", model="DS-2CD2142"),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        searcher._msf_client.search_modules.assert_called_once_with("hikvision")
+
+    @pytest.mark.asyncio
+    async def test_high_weight_with_msf_exploitable(self):
+        """weight=1.0 + MSF module available → exploitable=True in PoC."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, CVEEntry
+        from unittest.mock import AsyncMock, MagicMock
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig())
+        searcher = CVESearcher(config)
+
+        searcher._nvd_client = AsyncMock()
+        searcher._nvd_client.search = AsyncMock(return_value=[
+            CVEEntry(cve_id="CVE-2021-36260", severity="CRITICAL", source="nvd"),
+        ])
+
+        # MSF has a module for this CVE
+        searcher._msf_client = AsyncMock()
+        searcher._msf_client.find_module_for_cve = MagicMock(return_value={
+            "name": "exploit/linux/http/hikvision_cmd_injection",
+            "type": "exploit",
+            "cves": ["CVE-2021-36260"],
+        })
+
+        storage = AsyncMock()
+        searcher.storage = storage
+
+        item = CameraFingerprint(
+            ip="192.168.1.1", port=80, weight=1.0,
+            fingerprint=Fingerprint(vendor="hikvision", model="DS-2CD2142", version="V5.4.5"),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        assert "CVE-2021-36260" in result.fingerprint.cves
+        # Verify PoC was submitted with script_content (exploitable)
+        call_args = storage.submit.call_args_list
+        poc_args = [c for c in call_args if c[0][0] == "pocs"]
+        assert len(poc_args) > 0
+        poc = poc_args[0][0][1][0]
+        assert poc.script_content == "exploit/linux/http/hikvision_cmd_injection"
