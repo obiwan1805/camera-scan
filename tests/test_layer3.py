@@ -182,3 +182,58 @@ class TestNVDClient:
         result = await client.enrich(["CVE-2021-36260"])
         assert len(result) == 1
         assert result[0]["severity"] == "CRITICAL"
+
+
+class TestMSFRPCClient:
+    @pytest.fixture
+    def msf_config(self):
+        from src.core.config import MSFConfig
+        return MSFConfig(host="127.0.0.1", port=55553, password="test")
+
+    @pytest.fixture
+    def msf_client(self, msf_config):
+        from src.layers.layer3_cve_searcher.clients.msf_rpc_client import MSFRPCClient
+        return MSFRPCClient(msf_config)
+
+    def test_module_info_extraction(self, msf_client):
+        """Verify module info is parsed from MSF module metadata."""
+        raw = {
+            "name": "exploit/linux/http/hikvision_cmd_injection",
+            "description": "Hikvision command injection",
+            "references": [["CVE", "2021-36260"], ["URL", "https://..."]],
+            "type": "exploit",
+        }
+        info = msf_client._extract_module_info("exploit/linux/http/hikvision_cmd_injection", raw)
+        assert info["name"] == "exploit/linux/http/hikvision_cmd_injection"
+        assert info["type"] == "exploit"
+        assert info["cves"] == ["CVE-2021-36260"]
+
+    def test_module_info_no_cves(self, msf_client):
+        raw = {
+            "name": "auxiliary/scanner/http/hikvision_version",
+            "description": "Version scanner",
+            "references": [["URL", "https://..."]],
+            "type": "auxiliary",
+        }
+        info = msf_client._extract_module_info("auxiliary/scanner/http/hikvision_version", raw)
+        assert info["cves"] == []
+
+    def test_cache_stores_modules(self, msf_client):
+        from src.layers.layer3_cve_searcher.cache import MSFModuleCache
+        msf_client._module_cache = MSFModuleCache()
+        msf_client._module_cache.put("hikvision", [
+            {"name": "exploit/.../hikvision_cmd_injection", "type": "exploit", "cves": ["CVE-2021-36260"]}
+        ])
+        result = msf_client._module_cache.get("hikvision")
+        assert len(result) == 1
+
+    def test_find_module_for_cve_via_cache(self, msf_client):
+        from src.layers.layer3_cve_searcher.cache import MSFModuleCache
+        msf_client._module_cache = MSFModuleCache()
+        msf_client._module_cache.put("hikvision", [
+            {"name": "exploit/.../cmd_injection", "type": "exploit", "cves": ["CVE-2021-36260"]},
+            {"name": "auxiliary/.../default_creds", "type": "auxiliary", "cves": ["CVE-2017-7921"]},
+        ])
+        result = msf_client.find_module_for_cve("hikvision", "CVE-2021-36260")
+        assert result is not None
+        assert result["name"] == "exploit/.../cmd_injection"
