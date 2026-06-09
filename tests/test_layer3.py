@@ -304,3 +304,42 @@ class TestClassifyImpact:
         result = classify_impact("RCE and information disclosure", "CWE-78", "exploit", "")
         assert "rce" in result
         assert "info_leak" in result
+
+
+class TestWeightRouter:
+    @pytest.fixture
+    def router(self):
+        from src.layers.layer3_cve_searcher.router import WeightRouter
+        return WeightRouter()
+
+    def test_high_weight_model_version(self, router):
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=1.0,
+            fingerprint=Fingerprint(vendor="hikvision", model="DS-2CD2142", version="V5.4.5"),
+        )
+        assert router.classify(item) == "high"
+
+    def test_low_weight_model_only(self, router):
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=0.7,
+            fingerprint=Fingerprint(vendor="hikvision", model="DS-2CD2142"),
+        )
+        assert router.classify(item) == "low"
+
+    def test_low_weight_vendor_only(self, router):
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=0.0,
+            fingerprint=Fingerprint(vendor="hikvision"),
+        )
+        assert router.classify(item) == "low"
+
+    def test_skip_no_vendor(self, router):
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+        assert router.classify(item) == "skip"
