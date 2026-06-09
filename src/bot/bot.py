@@ -20,6 +20,7 @@ from .poc import PoCGroup
 from .dict import DictGroup
 from .target import TargetGroup
 from .signature import SignatureGroup
+from .cve import CveGroup
 
 
 class ScanBot(commands.Bot):
@@ -45,7 +46,7 @@ class ScanBot(commands.Bot):
         self._command_groups = [
             ScanGroup(self), ConfigGroup(self),
             PoCGroup(self), DictGroup(self), TargetGroup(self),
-            SignatureGroup(self),
+            SignatureGroup(self), CveGroup(self),
         ]
 
     async def setup_hook(self):
