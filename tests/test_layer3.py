@@ -237,3 +237,70 @@ class TestMSFRPCClient:
         result = msf_client.find_module_for_cve("hikvision", "CVE-2021-36260")
         assert result is not None
         assert result["name"] == "exploit/.../cmd_injection"
+
+
+class TestClassifyExploitability:
+    def test_no_result_no_cves(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_exploitability
+        from src.storage.schemas import Fingerprint, PoC
+        fp = Fingerprint(cves=[])
+        assert classify_exploitability(fp, []) == "no_result"
+
+    def test_exploitable_has_poc(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_exploitability
+        from src.storage.schemas import Fingerprint, PoC
+        fp = Fingerprint(cves=["CVE-2021-36260"])
+        pocs = [PoC(name="test", cve_id="CVE-2021-36260", script_content="exploit/.../hikvision")]
+        assert classify_exploitability(fp, pocs) == "exploitable"
+
+    def test_affected_has_version_no_poc(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_exploitability
+        from src.storage.schemas import Fingerprint, PoC
+        fp = Fingerprint(cves=["CVE-2021-36260"], version="V5.4.5")
+        pocs = [PoC(name="test", cve_id="CVE-2021-36260")]
+        assert classify_exploitability(fp, pocs) == "affected"
+
+    def test_unclear_no_version_no_poc(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_exploitability
+        from src.storage.schemas import Fingerprint, PoC
+        fp = Fingerprint(cves=["CVE-2021-36260"])
+        pocs = [PoC(name="test", cve_id="CVE-2021-36260")]
+        assert classify_exploitability(fp, pocs) == "unclear"
+
+
+class TestClassifyImpact:
+    def test_rce_from_cwe(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_impact
+        result = classify_impact("Command injection in web interface", "CWE-78", "exploit", "")
+        assert "rce" in result
+
+    def test_auth_bypass_from_description(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_impact
+        result = classify_impact("Authentication bypass allows access", "CWE-287", "auxiliary", "")
+        assert "auth_bypass" in result
+
+    def test_video_access_from_description(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_impact
+        result = classify_impact("Unauthenticated RTSP stream access", "", "", "")
+        assert "video_access" in result
+
+    def test_info_leak_from_cwe(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_impact
+        result = classify_impact("Information disclosure of credentials", "CWE-200", "", "")
+        assert "info_leak" in result
+
+    def test_dos_from_description(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_impact
+        result = classify_impact("Denial of service via crafted packet", "", "", "")
+        assert "dos" in result
+
+    def test_unknown_when_no_match(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_impact
+        result = classify_impact("Some other vulnerability", "", "", "")
+        assert result == ["unknown"]
+
+    def test_multiple_impacts(self):
+        from src.layers.layer3_cve_searcher.classifier import classify_impact
+        result = classify_impact("RCE and information disclosure", "CWE-78", "exploit", "")
+        assert "rce" in result
+        assert "info_leak" in result
