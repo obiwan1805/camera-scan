@@ -30,3 +30,21 @@ storage:
 queue:
   maxsize: 1000
   type: in_memory
+
+layer3:
+  enabled: true
+  nvd:
+    api_key: ""
+    base_url: "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    rate_limit: 50
+  msf:
+    host: "127.0.0.1"
+    port: 55553
+    password: ""
+    module_types:
+      - exploit
+      - auxiliary
+    batch_size: 200
+    check_timeout: 30
+  target_concurrency: 200
+  module_concurrency: 32

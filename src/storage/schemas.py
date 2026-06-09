@@ -46,6 +46,18 @@ class Fingerprint(BaseModel):
         return "; ".join(e.pattern for e in self.evidence_items) or None
 
 
+class CVEEntry(BaseModel):
+    """Internal model for in-memory CVE processing — not stored directly."""
+    cve_id: str
+    severity: Optional[str] = None
+    cvss_score: Optional[float] = None
+    description: Optional[str] = None
+    msf_module: Optional[str] = None
+    exploitable: bool = False
+    source: str = ""       # "nvd" | "msf_check" | "nvd+msf_check"
+    verified: bool = False
+
+
 class CameraFingerprint(BaseModel):
     """Complete fingerprint result from Layer 2."""
     ip: str

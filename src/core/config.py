@@ -1,5 +1,5 @@
 """Configuration schema and loader."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 import yaml
@@ -34,6 +34,32 @@ class Layer2Config:
 
 
 @dataclass
+class NVDConfig:
+    api_key: str = ""
+    base_url: str = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    rate_limit: int = 50  # requests per 30 seconds
+
+
+@dataclass
+class MSFConfig:
+    host: str = "127.0.0.1"
+    port: int = 55553
+    password: str = ""
+    module_types: List[str] = field(default_factory=lambda: ["exploit", "auxiliary"])
+    batch_size: int = 200
+    check_timeout: int = 30
+
+
+@dataclass
+class Layer3Config:
+    enabled: bool = True
+    nvd: NVDConfig = field(default_factory=NVDConfig)
+    msf: MSFConfig = field(default_factory=MSFConfig)
+    target_concurrency: int = 200
+    module_concurrency: int = 32
+
+
+@dataclass
 class StorageConfig:
     backend: str = "sqlite"
     path: str = "data/camera_scan.db"
@@ -49,6 +75,7 @@ class QueueConfig:
 class Config:
     layers: Layer1Config
     layer2: Layer2Config
+    layer3: Layer3Config
     storage: StorageConfig
     queue: QueueConfig
 
@@ -76,6 +103,24 @@ class Config:
                 import_feed_batch=data.get("layers", {}).get("layer2", {}).get("import_feed_batch", 100),
                 import_feed_interval=data.get("layers", {}).get("layer2", {}).get("import_feed_interval", 5),
             ),
+            layer3=Layer3Config(
+                enabled=data.get("layer3", {}).get("enabled", True),
+                nvd=NVDConfig(
+                    api_key=data.get("layer3", {}).get("nvd", {}).get("api_key", ""),
+                    base_url=data.get("layer3", {}).get("nvd", {}).get("base_url", "https://services.nvd.nist.gov/rest/json/cves/2.0"),
+                    rate_limit=data.get("layer3", {}).get("nvd", {}).get("rate_limit", 50),
+                ),
+                msf=MSFConfig(
+                    host=data.get("layer3", {}).get("msf", {}).get("host", "127.0.0.1"),
+                    port=data.get("layer3", {}).get("msf", {}).get("port", 55553),
+                    password=data.get("layer3", {}).get("msf", {}).get("password", ""),
+                    module_types=data.get("layer3", {}).get("msf", {}).get("module_types", ["exploit", "auxiliary"]),
+                    batch_size=data.get("layer3", {}).get("msf", {}).get("batch_size", 200),
+                    check_timeout=data.get("layer3", {}).get("msf", {}).get("check_timeout", 30),
+                ),
+                target_concurrency=data.get("layer3", {}).get("target_concurrency", 200),
+                module_concurrency=data.get("layer3", {}).get("module_concurrency", 32),
+            ),
             storage=StorageConfig(**data.get("storage", {})),
             queue=QueueConfig(**data.get("queue", {}))
         )
@@ -88,6 +133,7 @@ def get_default_config() -> Config:
     return Config(
         layers=Layer1Config(),
         layer2=Layer2Config(worker_pool=WorkerPoolConfig(), modules=["http", "rtsp", "onvif"]),
+        layer3=Layer3Config(),
         storage=StorageConfig(),
         queue=QueueConfig()
     )

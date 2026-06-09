@@ -6,3 +6,4 @@ zeep>=4.2.0
 mmh3>=3.0.0
 discord.py>=2.3.0
 python-dotenv>=1.0.0
+msgpack>=1.0.0
