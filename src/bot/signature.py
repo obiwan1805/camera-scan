@@ -407,26 +407,39 @@ class SignatureGroup(app_commands.Group):
         if pattern_type:
             await self._show_type(interaction, sig, pattern_type)
         else:
-            # Show all types summary with counts
-            embed = discord.Embed(title=f"Signature: {sig.vendor}", color=0x57F287)
-            if sig.aliases:
-                embed.add_field(name="Aliases", value=", ".join(sig.aliases), inline=False)
+            await self._show_summary(interaction, sig)
 
-            all_types = {
-                "favicon_hash": (sig.favicon_hashes, "Favicon hashes"),
-                "brand_keyword": (sig.brand_keywords, "Brand keywords"),
-                "model": (sig.model_patterns, "Model patterns"),
-                "version": (sig.version_patterns, "Version patterns"),
-                "endpoint": (sig.endpoint_probes, "Endpoint probes"),
-                "onvif": (sig.onvif_parsers, "ONVIF parsers"),
-                "rtsp_path": (sig.rtsp_paths, "RTSP paths"),
-                "extra": (sig.extra_patterns, "Extra patterns"),
-            }
-            for type_name, (items, label) in all_types.items():
-                embed.add_field(name=label, value=str(len(items)), inline=True)
+    async def _show_summary(self, interaction: discord.Interaction, sig):
+        """Show full summary with first few items per type."""
+        embed = discord.Embed(title=f"Signature: {sig.vendor}", color=0x57F287)
+        if sig.aliases:
+            embed.add_field(name="Aliases", value=", ".join(sig.aliases), inline=False)
 
-            embed.set_footer(text="Use /signature show vendor:... pattern_type:... to see details")
-            await safe_send(interaction, embed=embed)
+        all_types = [
+            ("favicon_hash", sig.favicon_hashes, "Favicon hashes", lambda h: f"hash={h}"),
+            ("brand_keyword", sig.brand_keywords, "Brand keywords", lambda k: f'"{k.pattern}" scope={k.scope}'),
+            ("model", sig.model_patterns, "Model patterns", lambda p: f'/{p.regex}/ scope={p.scope}'),
+            ("version", sig.version_patterns, "Version patterns", lambda p: f'/{p.regex}/ scope={p.scope}'),
+            ("endpoint", sig.endpoint_probes, "Endpoint probes", lambda e: f'{e.path} ({", ".join(e.protocol)})'),
+            ("onvif", sig.onvif_parsers, "ONVIF parsers", lambda o: f'mfr={o.manufacturer_match}'),
+            ("rtsp_path", sig.rtsp_paths, "RTSP paths", lambda p: f'"{p}"'),
+            ("extra", sig.extra_patterns, "Extra patterns", lambda e: f'{e.type}: /{e.regex or "-"}/'),
+        ]
+
+        for type_name, items, label, formatter in all_types:
+            if not items:
+                continue
+            preview_lines = [f"[{i}] {formatter(item)}" for i, item in enumerate(items[:3])]
+            value = "```\n" + "\n".join(preview_lines) + "\n```"
+            if len(items) > 3:
+                value += f"\n... and {len(items) - 3} more — use `pattern_type: {type_name}` to see all"
+            embed.add_field(name=f"{label} ({len(items)})", value=value, inline=False)
+
+        if not embed.fields or (len(embed.fields) == 1 and sig.aliases):
+            await safe_send(interaction, content=f"No patterns defined for **{sig.vendor}**")
+            return
+
+        await safe_send(interaction, embed=embed)
 
     async def _show_type(self, interaction: discord.Interaction, sig, pattern_type: str):
         items_map = {

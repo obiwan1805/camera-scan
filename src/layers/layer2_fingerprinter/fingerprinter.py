@@ -148,11 +148,12 @@ class Fingerprinter(Filter):
                 await self.storage.submit("raw_responses", raw_responses)
 
             if fp:
+                weight = self._calculate_weight(fp)
                 result = CameraFingerprint(
                     ip=ip,
                     port=port,
                     fingerprint=fp,
-                    weight=0.8
+                    weight=weight
                 )
                 await self.storage.submit("fingerprints", [result])
                 return result
@@ -237,6 +238,25 @@ class Fingerprinter(Filter):
                     await self.storage.cleanup_claims(max_age_hours=24)
                 except Exception:
                     pass
+
+    def _calculate_weight(self, fp: Fingerprint) -> float:
+        """Weight based on what was actually extracted.
+
+        model + version = 1.0 (fully identified)
+        model only      = 0.7
+        version only    = 0.4
+        neither         = 0.0
+        """
+        has_model = fp.model is not None
+        has_version = fp.version is not None
+
+        if has_model and has_version:
+            return 1.0
+        if has_model:
+            return 0.7
+        if has_version:
+            return 0.4
+        return 0.0
 
     async def _sig_watcher(self) -> None:
         """Periodically check for signature file changes and hot-reload."""
