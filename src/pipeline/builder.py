@@ -33,6 +33,9 @@ class PipelineBuilder:
     def get_layer2_modules(self) -> List[str]:
         return self.config.layer2.modules
 
+    def get_layer3_config(self):
+        return self.config.layer3
+
 
 class Pipeline:
     """Orchestrates the pipeline layers."""
