@@ -22,8 +22,9 @@ class MSFRPCClient:
     async def connect(self) -> None:
         """Connect to msfrpcd and authenticate."""
         try:
-            self._reader, self._writer = await asyncio.open_connection(
-                self.config.host, self.config.port
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.config.host, self.config.port),
+                timeout=5,
             )
             auth_msg = msgpack.packb({
                 "method": "auth.login",
@@ -32,7 +33,10 @@ class MSFRPCClient:
             })
             self._writer.write(auth_msg)
             await self._writer.drain()
-            response = await self._reader.read(65536)
+            response = await asyncio.wait_for(
+                self._reader.read(65536),
+                timeout=5,
+            )
             result = msgpack.unpackb(response, raw=False)
             self._token = result.get("result", {}).get("token")
             if not self._token:
