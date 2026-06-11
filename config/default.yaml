@@ -40,7 +40,7 @@ layer3:
   msf:
     host: "127.0.0.1"
     port: 55553
-    password: ""
+    password: "1"
     module_types:
       - exploit
       - auxiliary
