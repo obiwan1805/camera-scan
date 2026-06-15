@@ -12,35 +12,61 @@ class PoCGroup(app_commands.Group):
 
     @app_commands.command(name="help", description="Show PoC command help")
     async def poc_help(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="/poc — Proof-of-Concept Scripts", color=0x5865F2)
+        embed = discord.Embed(
+            title="/poc — Proof-of-Concept Scripts",
+            description=(
+                "Store and manage exploit PoC scripts linked to CVEs and vendors.\n"
+                "All commands work anytime."
+            ),
+            color=0x5865F2,
+        )
+
         embed.add_field(
-            name="/poc list `[vendor]`",
-            value="List all PoC scripts. Optionally filter by vendor.\n"
-                  "Shows ID, name, CVE, vendor, and severity for each.\n"
-                  "Works anytime.",
+            name="Commands",
+            value=(
+                "`/poc list [vendor]` — List all, optionally filter by vendor\n"
+                "`/poc add <name> [options]` — Add a PoC script\n"
+                "`/poc show <id>` — Full details including script code\n"
+                "`/poc remove <id>` — Delete a PoC"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/poc add `<name>` `[options]`",
-            value="Add a PoC script. Required: `name`. Provide script via `file` upload\n"
-                  "or `script_content` text. Options: `cve_id`, `vendor`, `protocol`,\n"
-                  "`script_type` (python/bash/powershell), `description`, `severity`.\n"
-                  "Works anytime.",
+            name="/poc add options",
+            value=(
+                "```\n"
+                "name:          (required) Script name\n"
+                "file:          Upload script file\n"
+                "script_content: Or paste script code\n"
+                "cve_id:        e.g. CVE-2021-36260\n"
+                "vendor:        Target vendor\n"
+                "protocol:      http, rtsp, onvif, etc.\n"
+                "script_type:   python (default), bash, powershell\n"
+                "description:   What it does\n"
+                "severity:      critical, high, medium, low\n"
+                "```\n"
+                "Provide either `file` or `script_content`."
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/poc show `<id>`",
-            value="Show full PoC details including description, script content,\n"
-                  "CVE, vendor, protocol, severity, and target list.\n"
-                  "Works anytime.",
+            name="Example",
+            value=(
+                "```\n"
+                "/poc add name:RCE-Test\n"
+                "  cve_id:CVE-2021-36260\n"
+                "  vendor:hikvision\n"
+                "  protocol:http\n"
+                "  severity:critical\n"
+                "  script_content:\"import requests; ...\"\n"
+                "```"
+            ),
             inline=False,
         )
-        embed.add_field(
-            name="/poc remove `<id>`",
-            value="Remove a PoC script by its ID.\n"
-                  "Works anytime.",
-            inline=False,
-        )
+
+        embed.set_footer(text="See also: /dict help, /signature help")
         await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="add", description="Add a new PoC script")

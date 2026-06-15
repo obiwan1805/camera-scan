@@ -47,55 +47,63 @@ class ConfigGroup(app_commands.Group):
 
     @app_commands.command(name="help", description="Show config command help")
     async def config_help(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="/config — Scan Configuration", color=0x5865F2)
+        embed = discord.Embed(
+            title="/config — Runtime Configuration",
+            description=(
+                "Tune scan parameters at runtime. **All changes are saved to "
+                "config/default.yaml** and survive bot restarts.\n\n"
+                "Changes apply on the **next** `/scan start`."
+            ),
+            color=0x5865F2,
+        )
+
         embed.add_field(
-            name="/config show",
-            value="Display all current config values.\n"
-                  "Works anytime.",
+            name="Layer 1 — Masscan",
+            value=(
+                "`/config scan_rate <n>` — packets/sec (default: 1,000)\n"
+                "`/config masscan_wait <n>` — probe wait in sec (1-300, default: 10)"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/config scan_rate `<value>`",
-            value="Masscan packets-per-second. Higher = faster but noisier.\n"
-                  "Default: 1,000. Only affects Layer 1 (masscan scan).\n"
-                  "Saved to config. Requires idle.",
+            name="Layer 2 — Fingerprinter",
+            value=(
+                "`/config max_concurrent <n>` — concurrent probes (default: 200)\n"
+                "`/config prober_timeout <n>` — probe timeout in sec (1-60, default: 10)"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/config masscan_wait `<value>`",
-            value="Seconds masscan waits per probe for a response. Higher catches\n"
-                  "more hosts on slow networks but slower overall. Default: 10.\n"
-                  "Saved to config. Requires idle.",
+            name="Masscan Import Feed",
+            value=(
+                "`/config import_feed_batch <n>` — entries per batch (1-10000, default: 100)\n"
+                "`/config import_feed_interval <n>` — sec between batches (1-300, default: 5)"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/config max_concurrent `<value>`",
-            value="Max concurrent fingerprinter probes. Controls how many IPs\n"
-                  "are fingerprinted simultaneously. Default: 200.\n"
-                  "Saved to config. Requires idle.",
+            name="Other",
+            value="`/config show` — Display all current values (works anytime)",
             inline=False,
         )
+
         embed.add_field(
-            name="/config prober_timeout `<value>`",
-            value="Timeout in seconds for each prober request (HTTP, HTTPS,\n"
-                  "RTSP, ONVIF, favicon). Higher = more patient but slower.\n"
-                  "Default: 10. Saved to config. Requires idle.",
+            name="Tuning tips",
+            value=(
+                "```\n"
+                "Fast + noisy:    scan_rate 10000, max_concurrent 500\n"
+                "Slow + stealthy: scan_rate 200,  max_concurrent 50\n"
+                "Slow network:    masscan_wait 30, prober_timeout 20\n"
+                "Huge import:     import_feed_batch 30, interval 10\n"
+                "```"
+            ),
             inline=False,
         )
-        embed.add_field(
-            name="/config import_feed_batch `<value>`",
-            value="Number of masscan entries fed to fingerprinter per batch\n"
-                  "during `/target import-masscan`. Default: 100.\n"
-                  "Saved to config. Requires idle.",
-            inline=False,
-        )
-        embed.add_field(
-            name="/config import_feed_interval `<value>`",
-            value="Seconds to wait between feed batches during masscan import.\n"
-                  "Lower = faster import, higher = less DB pressure.\n"
-                  "Default: 5. Saved to config. Requires idle.",
-            inline=False,
-        )
+
+        embed.set_footer(text="All setters require scan to be idle. See also: /scan help")
         await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="show", description="Show current config values")

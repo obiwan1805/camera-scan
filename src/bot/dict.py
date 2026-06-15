@@ -11,40 +11,55 @@ class DictGroup(app_commands.Group):
 
     @app_commands.command(name="help", description="Show dict command help")
     async def dict_help(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="/dict — Password & Credential Dictionaries", color=0x5865F2)
+        embed = discord.Embed(
+            title="/dict — Password & Credential Dictionaries",
+            description=(
+                "Manage credential dictionaries for brute-force testing.\n"
+                "Use any `dict_type` name. All commands work anytime."
+            ),
+            color=0x5865F2,
+        )
+
         embed.add_field(
-            name="/dict list",
-            value="List all dictionary types and their entry counts.\n"
-                  "Works anytime.",
+            name="Commands",
+            value=(
+                "`/dict list` — All dictionary types with counts\n"
+                "`/dict add <dict_type> <value>` — Add single entry\n"
+                "`/dict import <dict_type> <file>` — Bulk from text file\n"
+                "`/dict show <dict_type>` — List entries with IDs\n"
+                "`/dict remove <id>` — Delete entry by ID"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/dict add `<dict_type>` `<value>`",
-            value="Add a single entry to a dictionary.\n"
-                  "`dict_type`: category name (e.g. passwords, default_creds)\n"
-                  "`value`: the entry (e.g. `admin123` or `admin:admin123`)\n"
-                  "Works anytime.",
+            name="Common types",
+            value=(
+                "```\n"
+                "default_usernames  admin, root, service\n"
+                "default_passwords  admin123, 12345, hik12345\n"
+                "default_creds      admin:admin (user:pass pairs)\n"
+                "```"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/dict import `<dict_type>` `<file>`",
-            value="Bulk import entries from a text file (one entry per line).\n"
-                  "Duplicates are silently skipped. Works anytime.",
+            name="Example",
+            value=(
+                "```\n"
+                "/dict add default_passwords admin123\n"
+                "/dict import default_creds creds.txt\n"
+                "/dict show default_creds\n"
+                "→ 1: admin:admin\n"
+                "  2: root:toor\n"
+                "  ...\n"
+                "```"
+            ),
             inline=False,
         )
-        embed.add_field(
-            name="/dict show `<dict_type>`",
-            value="Display all entries in a dictionary with their IDs.\n"
-                  "Use the IDs with `/dict remove` to delete specific entries.\n"
-                  "Works anytime.",
-            inline=False,
-        )
-        embed.add_field(
-            name="/dict remove `<id>`",
-            value="Remove a single entry by its ID (shown in `/dict show`).\n"
-                  "Works anytime.",
-            inline=False,
-        )
+
+        embed.set_footer(text="See also: /poc help")
         await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="add", description="Add an entry to a dictionary")

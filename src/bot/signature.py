@@ -275,66 +275,110 @@ class SignatureGroup(app_commands.Group):
     # --- help ---
     @app_commands.command(name="help", description="Show signature command help")
     async def signature_help(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="/signature — Fingerprint Signature Management", color=0x5865F2)
+        embed = discord.Embed(
+            title="/signature — Fingerprint Signatures",
+            description=(
+                "Signatures identify cameras by matching patterns against\n"
+                "collected data (HTML, headers, RTSP, ONVIF, favicon).\n\n"
+                "Stored as YAML in `config/signatures/`. Hot-reloads every 30s.\n"
+                "All commands work anytime, even during a scan."
+            ),
+            color=0x5865F2,
+        )
+
         embed.add_field(
-            name="/signature list `[vendor]`",
-            value="List signature counts for a vendor. Without vendor, opens a\n"
-                  "dropdown to pick from all loaded vendors.\n"
-                  "Works anytime.",
+            name="Commands",
+            value=(
+                "`/signature list [vendor]` — Counts per vendor (dropdown if none)\n"
+                "`/signature show <vendor> [type]` — Pattern previews + details\n"
+                "`/signature test` — Test regex against sample text\n"
+                "`/signature add` — Add a pattern via modal form\n"
+                "`/signature remove <vendor> <type> <index>` — Delete pattern\n"
+                "`/signature export <vendor>` — Download YAML as file\n"
+                "`/signature import <file>` — Import YAML file\n"
+                "`/signature reload` — Force reload from disk"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/signature show `<vendor>` `[pattern_type]`",
-            value="Show detailed signature patterns. Without type, shows a summary\n"
-                  "with counts per type. With type (e.g. model, brand_keyword),\n"
-                  "shows each pattern with regex, scope, CVEs. Paginated if long.\n"
-                  "Works anytime.",
+            name="Pattern types",
+            value=(
+                "```\n"
+                "brand_keyword  Plain string match (vendor confirmation)\n"
+                "model          Regex with capture group for model\n"
+                "version        Regex with optional normalization\n"
+                "favicon_hash   Integer MMH3 hash\n"
+                "endpoint       HTTP path feeding XML/JSON to matcher\n"
+                "onvif          ONVIF manufacturer/model/firmware\n"
+                "rtsp_path      RTSP URL feeding banner to matcher\n"
+                "extra          Extensible (e.g. ssl_cn matching)\n"
+                "```"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/signature test",
-            value="Opens a form to test a regex against sample text.\n"
-                  "If matched, shows result with an 'Add to Signature' button.\n"
-                  "If no match, shows 'Edit & Retry' button. Test as many times\n"
-                  "as you want before adding. Works anytime.",
+            name="How to add a signature (recommended flow)",
+            value=(
+                "```\n"
+                "1. /signature test\n"
+                "   → Paste your regex + sample text\n"
+                "   → Verify it matches before adding\n"
+                "\n"
+                "2. Click 'Add to Signature' (or run /signature add)\n"
+                "   → Vendor: e.g. hikvision\n"
+                "   → Type: e.g. model\n"
+                "   → Pattern: your regex\n"
+                "   → CVEs: optional, comma-separated\n"
+                "\n"
+                "3. Preview shows — click 'Confirm Add'\n"
+                "   → Written to YAML, engine reloaded\n"
+                "\n"
+                "4. /signature show hikvision model\n"
+                "   → Verify it appears in the list\n"
+                "```"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/signature add",
-            value="Opens a popup form to add a new signature. Fields: vendor,\n"
-                  "type (brand_keyword|model|version|endpoint|favicon_hash|onvif|\n"
-                  "rtsp_path|extra), pattern/regex, CVEs. Auto-reloads engine.\n"
-                  "Tip: use `/signature test` first to verify your regex. Works anytime.",
+            name="Regex examples",
+            value=(
+                "```\n"
+                "brand_keyword:  hikvision\n"
+                "model:          DS-2CD\\d+[A-Za-z\\d-]*\n"
+                "model w/group:  <model>(.*?)</model>  group=1\n"
+                "version:        <firmwareVersion>(.*?)</firmwareVersion>\n"
+                "favicon_hash:   999357577\n"
+                "endpoint:       /ISAPI/System/deviceInfo\n"
+                "```"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/signature remove `<vendor>` `<pattern_type>` `<index>`",
-            value="Remove a specific pattern by index (shown in /signature show).\n"
-            "Shows a confirmation prompt before deleting. Auto-reloads engine.\n"
-            "Works anytime.",
+            name="Scopes (where patterns search)",
+            value=(
+                "`html` `headers` `xml_text` `json_text`\n"
+                "`rtsp_banner` `onvif_response` `ssl_cert`"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/signature export `<vendor>`",
-            value="Export a vendor's full YAML signature file as a Discord attachment.\n"
-                  "Works anytime.",
+            name="Tips",
+            value=(
+                "- Always test with `/signature test` first\n"
+                "- Use capture groups for XML tag extraction\n"
+                "- Multiple scopes catch more variants\n"
+                "- Export before bulk edits as backup\n"
+                "- New vendor? Just type the name — file is created"
+            ),
             inline=False,
         )
-        embed.add_field(
-            name="/signature import `<file>`",
-            value="Import signatures from an uploaded YAML file. Validates against\n"
-                  "the schema, writes to config/signatures/, and reloads the engine.\n"
-                  "Works anytime.",
-            inline=False,
-        )
-        embed.add_field(
-            name="/signature reload",
-            value="Reload all signature YAML files from disk and rebuild the engine.\n"
-                  "Also happens automatically every 30 seconds via hot-reload.\n"
-                  "Works anytime.",
-            inline=False,
-        )
-        embed.set_footer(text="Signature types: brand_keyword, model, version, endpoint, favicon_hash, onvif, rtsp_path, extra")
+
+        embed.set_footer(text="Weight: model+version=1.0, model=0.7, version=0.4, neither=0.0")
         await safe_send(interaction, embed=embed)
 
     # --- list ---

@@ -12,37 +12,64 @@ class ScanGroup(app_commands.Group):
 
     @app_commands.command(name="help", description="Show scan command help")
     async def scan_help(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="/scan — Camera Scan Controls", color=0x5865F2)
+        embed = discord.Embed(
+            title="/scan — Camera Scan Controls",
+            description=(
+                "Run the two-layer pipeline:\n"
+                "**Layer 1** — Masscan discovers open ports\n"
+                "**Layer 2** — Fingerprinter identifies devices\n\n"
+                "Pipeline: `targets → masscan → queue → fingerprinter → results`"
+            ),
+            color=0x5865F2,
+        )
+
         embed.add_field(
-            name="/scan start",
-            value="Start the Layer 1 (masscan) + Layer 2 (fingerprint) pipeline.\n"
-                  "Resumes from `paused.conf` if a previous scan was paused.\n"
-                  "Requires at least one target in `/target list`. "
-                  "Cannot start while another scan is running.",
+            name="Commands",
+            value=(
+                "`/scan start` — Start or resume the pipeline\n"
+                "`/scan pause` — Pause (resumable, writes paused.conf)\n"
+                "`/scan stop` — Stop completely (deletes paused.conf)\n"
+                "`/scan progress` — Live stats during a scan"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/scan pause",
-            value="Pause the running scan. Waits for the pipeline to fully stop\n"
-                  "before responding (masscan writes `paused.conf`).\n"
-                  "Use `/scan start` to resume from where it left off.\n"
-                  "Only works when a scan is running.",
+            name="Typical workflow",
+            value=(
+                "```\n"
+                "/target add 192.168.1.0/24\n"
+                "/scan start\n"
+                "/scan progress\n"
+                "/scan pause     (or stop)\n"
+                "```\n"
+                "If you paused: `/scan start` resumes.\n"
+                "If you stopped: `/scan start` starts fresh."
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/scan stop",
-            value="Stop the scan and delete `paused.conf`. Fingerprinted results\n"
-                  "are saved, but the scan will restart from scratch on next `/scan start`.\n"
-                  "Only works when a scan is running.",
+            name="Requirements",
+            value=(
+                "- Need targets via `/target add` or `/target import`\n"
+                "- Or staged masscan output via `/target import-masscan`\n"
+                "- Scan must be idle to start"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/scan progress",
-            value="Show live stats: scanned IPs, discovered hosts, fingerprints,\n"
-                  "queue depth, processing rate, and elapsed time.\n"
-                  "Only works when a scan is running.",
+            name="Status states",
+            value=(
+                "**idle** — ready to start, config/target commands work\n"
+                "**running** — only pause/stop/progress work\n"
+                "**stopping** — tearing down, wait for idle"
+            ),
             inline=False,
         )
+
+        embed.set_footer(text="See also: /target help, /config help")
         await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="start", description="Start the camera scan pipeline")
