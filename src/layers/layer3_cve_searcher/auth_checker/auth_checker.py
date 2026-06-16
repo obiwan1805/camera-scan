@@ -14,12 +14,17 @@ class AuthChecker:
         self._config = config
         self._banner = BannerDetector(config)
         self._msf = MSFDetector(config, msf_client)
+        self._semaphore = asyncio.Semaphore(config.max_auth_concurrency)
         self._logger = setup_logger("AuthChecker")
 
     async def check(self, item: CameraFingerprint) -> List[AuthInfo]:
         if not self._config.enabled:
             return []
 
+        async with self._semaphore:
+            return await self._check_inner(item)
+
+    async def _check_inner(self, item: CameraFingerprint) -> List[AuthInfo]:
         ip = item.ip
         port = item.port
         protocol = get_protocol(port)

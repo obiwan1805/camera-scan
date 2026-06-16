@@ -226,6 +226,8 @@ class CVESearcher(Filter):
         self._logger.info(
             f"[Final] Processed: {self._processed} | "
             f"CVE found: {self._cve_found} | "
+            f"Auth checked: {self._auth_checked} | "
+            f"Auth found: {self._auth_found} | "
             f"Skipped: {self._skipped} | "
             f"Failed: {self._failed} | "
             f"Rate: {rate:.1f}/s"
