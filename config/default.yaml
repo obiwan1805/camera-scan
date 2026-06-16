@@ -48,3 +48,8 @@ layer3:
     check_timeout: 30
   target_concurrency: 200
   module_concurrency: 32
+  auth:
+    enabled: true
+    banner_timeout: 5
+    msf_detect_timeout: 15
+    max_auth_concurrency: 50

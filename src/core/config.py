@@ -51,12 +51,21 @@ class MSFConfig:
 
 
 @dataclass
+class AuthCheckConfig:
+    enabled: bool = True
+    banner_timeout: int = 5
+    msf_detect_timeout: int = 15
+    max_auth_concurrency: int = 50
+
+
+@dataclass
 class Layer3Config:
     enabled: bool = True
     nvd: NVDConfig = field(default_factory=NVDConfig)
     msf: MSFConfig = field(default_factory=MSFConfig)
     target_concurrency: int = 200
     module_concurrency: int = 32
+    auth: AuthCheckConfig = field(default_factory=AuthCheckConfig)
 
 
 @dataclass
@@ -120,6 +129,12 @@ class Config:
                 ),
                 target_concurrency=data.get("layer3", {}).get("target_concurrency", 200),
                 module_concurrency=data.get("layer3", {}).get("module_concurrency", 32),
+                auth=AuthCheckConfig(
+                    enabled=data.get("layer3", {}).get("auth", {}).get("enabled", True),
+                    banner_timeout=data.get("layer3", {}).get("auth", {}).get("banner_timeout", 5),
+                    msf_detect_timeout=data.get("layer3", {}).get("auth", {}).get("msf_detect_timeout", 15),
+                    max_auth_concurrency=data.get("layer3", {}).get("auth", {}).get("max_auth_concurrency", 50),
+                ),
             ),
             storage=StorageConfig(**data.get("storage", {})),
             queue=QueueConfig(**data.get("queue", {}))
