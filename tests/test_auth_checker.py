@@ -369,3 +369,82 @@ class TestMSFDetector:
             result = await detector.detect("1.1.1.1", 80, "http")
 
         assert result.has_login is False
+
+
+class TestAuthChecker:
+    @pytest.fixture
+    def checker(self):
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        return AuthChecker(AuthCheckConfig(), msf_client=None)
+
+    @pytest.mark.asyncio
+    async def test_check_ssh_port(self, checker):
+        """SSH port routes to BannerDetector."""
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(return_value=b"SSH-2.0-OpenSSH_8.9\r\n")
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            from src.storage.schemas import CameraFingerprint, Fingerprint
+            item = CameraFingerprint(ip="1.1.1.1", port=22, fingerprint=Fingerprint())
+            results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].protocol == "ssh"
+        assert results[0].has_login is True
+
+    @pytest.mark.asyncio
+    async def test_check_unknown_port_no_banner(self, checker):
+        """Unknown port with timeout returns has_login=False."""
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            from src.storage.schemas import CameraFingerprint, Fingerprint
+            item = CameraFingerprint(ip="1.1.1.1", port=9999, fingerprint=Fingerprint())
+            results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].has_login is False
+
+    @pytest.mark.asyncio
+    async def test_check_http_port_uses_msf_detector(self, checker):
+        """HTTP port routes to MSFDetector (form fallback when msf_client=None)."""
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value='<form><input type="password"></form>')
+
+        mock_session_instance = AsyncMock()
+        mock_session_instance.get = MagicMock(return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_response),
+            __aexit__=AsyncMock(return_value=False),
+        ))
+        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
+        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
+            from src.storage.schemas import CameraFingerprint, Fingerprint
+            item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
+            results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].has_login is True
+        assert results[0].auth_type == "form"
+
+    @pytest.mark.asyncio
+    async def test_check_disabled(self):
+        """When disabled, check returns empty list."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        checker = AuthChecker(AuthCheckConfig(enabled=False), msf_client=None)
+
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        item = CameraFingerprint(ip="1.1.1.1", port=22, fingerprint=Fingerprint())
+        results = await checker.check(item)
+        assert results == []
