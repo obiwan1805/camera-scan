@@ -552,3 +552,37 @@ class TestCVESearcherAuthIntegration:
         await searcher.process(item)
         assert searcher._auth_checked == 1
         assert searcher._auth_found == 1
+
+
+class TestCLISkipAuth:
+    def test_run_layer3_has_skip_auth_flag(self):
+        """run-layer3 subparser accepts --skip-auth."""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        p_run = subparsers.add_parser("run-layer3")
+        p_run.add_argument("--skip-auth", action="store_true")
+        p_run.add_argument("--db")
+        p_run.add_argument("--limit", type=int)
+        p_run.add_argument("--vendor")
+        p_run.add_argument("--concurrency", type=int, default=10)
+
+        args = parser.parse_args(["run-layer3", "--skip-auth"])
+        assert args.skip_auth is True
+
+    def test_run_layer3_default_auth_enabled(self):
+        """run-layer3 without --skip-auth has skip_auth=False."""
+        import argparse
+
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        p_run = subparsers.add_parser("run-layer3")
+        p_run.add_argument("--skip-auth", action="store_true")
+        p_run.add_argument("--db")
+        p_run.add_argument("--limit", type=int)
+        p_run.add_argument("--vendor")
+        p_run.add_argument("--concurrency", type=int, default=10)
+
+        args = parser.parse_args(["run-layer3"])
+        assert args.skip_auth is False

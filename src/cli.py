@@ -488,6 +488,9 @@ async def cmd_run_layer3(args):
     # Init CVESearcher (without queue — we'll call process() directly)
     cve_searcher = CVESearcher(config.layer3, None, None, storage)
 
+    if args.skip_auth:
+        cve_searcher._auth_checker = None
+
     # Init clients manually
     from src.layers.layer3_cve_searcher.clients.nvd_client import NVDClient
     from src.layers.layer3_cve_searcher.clients.msf_rpc_client import MSFRPCClient
@@ -665,6 +668,7 @@ def main():
     p_run.add_argument("--limit", type=int, help="Limit number of targets")
     p_run.add_argument("--vendor", help="Filter by vendor name")
     p_run.add_argument("--concurrency", type=int, default=10, help="Concurrent targets (default: 10)")
+    p_run.add_argument("--skip-auth", action="store_true", help="Skip authentication detection")
     p_run.set_defaults(func=cmd_run_layer3)
 
     # test-msf
