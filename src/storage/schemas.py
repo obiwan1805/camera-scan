@@ -46,6 +46,16 @@ class Fingerprint(BaseModel):
         return "; ".join(e.pattern for e in self.evidence_items) or None
 
 
+class AuthInfo(BaseModel):
+    """Authentication detection result for a single port."""
+    port: int
+    protocol: str
+    has_login: bool
+    auth_type: str
+    raw_response: str = ""
+    msf_module: Optional[str] = None
+
+
 class CVEEntry(BaseModel):
     """Internal model for in-memory CVE processing — not stored directly."""
     cve_id: str
@@ -66,6 +76,7 @@ class CameraFingerprint(BaseModel):
     status: str = "fingerprint_done"
     fingerprint: Fingerprint
     weight: float = 0.0
+    auth_info: List["AuthInfo"] = []
 
 
 class RawResponse(BaseModel):
