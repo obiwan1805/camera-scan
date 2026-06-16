@@ -1,6 +1,8 @@
 """Tests for Layer 3 Authentication Checker."""
+import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -113,3 +115,150 @@ class TestProtocolMap:
         assert is_web_protocol("https") is True
         assert is_web_protocol("ssh") is False
         assert is_web_protocol("unknown") is False
+
+
+class TestBannerDetector:
+    @pytest.fixture
+    def detector(self):
+        from src.layers.layer3_cve_searcher.auth_checker.banner_detector import BannerDetector
+        from src.core.config import AuthCheckConfig
+        return BannerDetector(AuthCheckConfig())
+
+    @pytest.mark.asyncio
+    async def test_detect_ssh_banner(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(return_value=b"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.1\r\n")
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 22, "ssh")
+
+        assert result.has_login is True
+        assert result.protocol == "ssh"
+        assert result.auth_type == "password"
+        assert "SSH-2.0" in result.raw_response
+
+    @pytest.mark.asyncio
+    async def test_detect_telnet_login(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(return_value=b"\xff\xfd\x01\xff\xfd\x1flogin: ")
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 23, "telnet")
+
+        assert result.has_login is True
+        assert result.protocol == "telnet"
+        assert result.auth_type == "password"
+
+    @pytest.mark.asyncio
+    async def test_detect_rtsp_401(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(
+            return_value=b"RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"LIVE555\"\r\n\r\n"
+        )
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+        mock_writer.write = MagicMock()
+        mock_writer.drain = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 554, "rtsp")
+
+        assert result.has_login is True
+        assert result.protocol == "rtsp"
+        assert result.auth_type == "digest"
+
+    @pytest.mark.asyncio
+    async def test_detect_rtsp_200_no_auth(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(
+            return_value=b"RTSP/1.0 200 OK\r\nPublic: OPTIONS, DESCRIBE\r\n\r\n"
+        )
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+        mock_writer.write = MagicMock()
+        mock_writer.drain = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 554, "rtsp")
+
+        assert result.has_login is False
+
+    @pytest.mark.asyncio
+    async def test_detect_ftp_password_required(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.readline = AsyncMock(side_effect=[
+            b"220 Welcome to FTP\r\n",
+            b"331 Password required\r\n",
+        ])
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+        mock_writer.write = MagicMock()
+        mock_writer.drain = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 21, "ftp")
+
+        assert result.has_login is True
+        assert result.auth_type == "password"
+
+    @pytest.mark.asyncio
+    async def test_detect_ftp_anonymous_ok(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.readline = AsyncMock(side_effect=[
+            b"220 Welcome to FTP\r\n",
+            b"230 Anonymous login ok\r\n",
+        ])
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+        mock_writer.write = MagicMock()
+        mock_writer.drain = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 21, "ftp")
+
+        assert result.has_login is True
+        assert result.auth_type == "anonymous"
+
+    @pytest.mark.asyncio
+    async def test_detect_unknown_no_banner(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 9999, "unknown")
+
+        assert result.has_login is False
+        assert result.protocol == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_detect_connection_refused(self, detector):
+        with patch("asyncio.open_connection", new_callable=AsyncMock, side_effect=ConnectionRefusedError):
+            result = await detector.detect("1.1.1.1", 22, "ssh")
+
+        assert result.has_login is False
+
+    @pytest.mark.asyncio
+    async def test_raw_response_truncated(self, detector):
+        mock_reader = AsyncMock()
+        mock_reader.read = AsyncMock(return_value=b"SSH-2.0-OpenSSH " + b"A" * 600)
+        mock_writer = MagicMock()
+        mock_writer.close = MagicMock()
+        mock_writer.wait_closed = AsyncMock()
+
+        with patch("asyncio.open_connection", new_callable=AsyncMock, return_value=(mock_reader, mock_writer)):
+            result = await detector.detect("1.1.1.1", 22, "ssh")
+
+        assert len(result.raw_response) <= 512
