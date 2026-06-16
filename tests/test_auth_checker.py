@@ -448,3 +448,107 @@ class TestAuthChecker:
         item = CameraFingerprint(ip="1.1.1.1", port=22, fingerprint=Fingerprint())
         results = await checker.check(item)
         assert results == []
+
+
+class TestCVESearcherAuthIntegration:
+    @pytest.mark.asyncio
+    async def test_process_includes_auth_info(self):
+        """process() populates auth_info when auth checker is enabled."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig, AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig(), auth=AuthCheckConfig())
+        searcher = CVESearcher(config)
+        searcher._nvd_client = AsyncMock()
+        searcher._msf_client = AsyncMock()
+
+        mock_auth_checker = AsyncMock()
+        mock_auth_checker.check = AsyncMock(return_value=[
+            AuthInfo(port=80, protocol="http", has_login=True, auth_type="form"),
+        ])
+        searcher._auth_checker = mock_auth_checker
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        assert len(result.auth_info) == 1
+        assert result.auth_info[0].has_login is True
+        assert result.auth_info[0].auth_type == "form"
+
+    @pytest.mark.asyncio
+    async def test_process_auth_disabled(self):
+        """process() leaves auth_info empty when disabled."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig, AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig(), auth=AuthCheckConfig(enabled=False))
+        searcher = CVESearcher(config)
+        searcher._nvd_client = AsyncMock()
+        searcher._msf_client = AsyncMock()
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        assert result.auth_info == []
+
+    @pytest.mark.asyncio
+    async def test_process_auth_failure_does_not_break_cve(self):
+        """Auth checker failure doesn't prevent CVE search from completing."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig, AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig(), auth=AuthCheckConfig())
+        searcher = CVESearcher(config)
+        searcher._nvd_client = AsyncMock()
+        searcher._msf_client = AsyncMock()
+
+        mock_auth_checker = AsyncMock()
+        mock_auth_checker.check = AsyncMock(side_effect=Exception("auth check exploded"))
+        searcher._auth_checker = mock_auth_checker
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        assert result.auth_info == []
+
+    @pytest.mark.asyncio
+    async def test_auth_progress_counters(self):
+        """Auth counters are incremented after processing."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig, AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        config = Layer3Config(nvd=NVDConfig(), msf=MSFConfig(), auth=AuthCheckConfig())
+        searcher = CVESearcher(config)
+        searcher._nvd_client = AsyncMock()
+        searcher._msf_client = AsyncMock()
+
+        mock_auth_checker = AsyncMock()
+        mock_auth_checker.check = AsyncMock(return_value=[
+            AuthInfo(port=22, protocol="ssh", has_login=True, auth_type="password"),
+        ])
+        searcher._auth_checker = mock_auth_checker
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=22, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+
+        await searcher.process(item)
+        assert searcher._auth_checked == 1
+        assert searcher._auth_found == 1

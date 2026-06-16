@@ -8,6 +8,7 @@ from src.storage.base import StorageBackend
 from src.storage.schemas import CameraFingerprint
 from src.utils.logging import setup_logger
 
+from .auth_checker import AuthChecker
 from .router import WeightRouter
 from .strategies.nvd_strategy import HighConfidenceStrategy
 from .strategies.msf_strategy import LowConfidenceStrategy
@@ -44,6 +45,13 @@ class CVESearcher(Filter):
         self._nvd_client: Optional[NVDClient] = None
         self._msf_client: Optional[MSFRPCClient] = None
 
+        self._auth_checker: Optional[AuthChecker] = None
+        if config.auth.enabled:
+            self._auth_checker = AuthChecker(config.auth, msf_client=None)
+
+        self._auth_checked = 0
+        self._auth_found = 0
+
         # Progress counters
         self._processed = 0
         self._cve_found = 0
@@ -69,6 +77,9 @@ class CVESearcher(Filter):
             await self._msf_client.connect()
         except Exception as e:
             self._logger.warning(f"msfrpcd connection failed: {e}. MSF check unavailable.")
+
+        if self._auth_checker and self._msf_client:
+            self._auth_checker._msf._msf_client = self._msf_client
 
         self._task = asyncio.create_task(self._run())
         self._status_task = asyncio.create_task(self._status_reporter())
@@ -124,25 +135,46 @@ class CVESearcher(Filter):
             self._logger.error(f"Error processing {item.ip}:{item.port}: {e}")
 
     async def process(self, item: CameraFingerprint) -> Optional[CameraFingerprint]:
-        """Process a CameraFingerprint and return enriched version."""
+        """Process a CameraFingerprint: CVE search + auth check in parallel."""
         strategy_type = self._router.classify(item)
 
-        if strategy_type == "skip":
-            self._logger.info(f"[SKIP] {item.ip}:{item.port} — no vendor")
-            return item
+        async def _cve_search():
+            if strategy_type == "skip":
+                self._logger.info(f"[SKIP] {item.ip}:{item.port} — no vendor")
+                return item
+            try:
+                if strategy_type == "high":
+                    return await self._high_strategy.execute(
+                        item, self._nvd_client, self._msf_client, self.storage
+                    )
+                else:
+                    return await self._low_strategy.execute(
+                        item, self._nvd_client, self._msf_client, self.storage
+                    )
+            except Exception as e:
+                self._logger.error(f"Strategy error for {item.ip}:{item.port}: {e}")
+                return item
 
-        try:
-            if strategy_type == "high":
-                return await self._high_strategy.execute(
-                    item, self._nvd_client, self._msf_client, self.storage
-                )
-            else:
-                return await self._low_strategy.execute(
-                    item, self._nvd_client, self._msf_client, self.storage
-                )
-        except Exception as e:
-            self._logger.error(f"Strategy error for {item.ip}:{item.port}: {e}")
-            return item
+        async def _auth_check():
+            if not self._auth_checker:
+                return []
+            try:
+                return await self._auth_checker.check(item)
+            except Exception as e:
+                self._logger.warning(f"Auth check failed for {item.ip}:{item.port}: {e}")
+                return []
+
+        cve_result, auth_result = await asyncio.gather(_cve_search(), _auth_check())
+
+        result = cve_result if cve_result is not None else item
+        result.auth_info = auth_result
+
+        if auth_result:
+            self._auth_checked += 1
+            if any(a.has_login for a in auth_result):
+                self._auth_found += 1
+
+        return result
 
     async def _status_reporter(self) -> None:
         while self._running:
@@ -152,6 +184,8 @@ class CVESearcher(Filter):
             self._logger.info(
                 f"[Progress] Processed: {self._processed} | "
                 f"CVE found: {self._cve_found} | "
+                f"Auth checked: {self._auth_checked} | "
+                f"Auth found: {self._auth_found} | "
                 f"Skipped: {self._skipped} | "
                 f"Failed: {self._failed} | "
                 f"Active: {self._processing_count} | "
