@@ -586,3 +586,79 @@ class TestCLISkipAuth:
 
         args = parser.parse_args(["run-layer3"])
         assert args.skip_auth is False
+
+
+class TestAuthCheckerIntegration:
+    @pytest.mark.asyncio
+    async def test_full_pipeline_cve_and_auth(self):
+        """Full integration: CVE search + auth check run in parallel, results merged."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig, AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, CVEEntry, AuthInfo
+
+        config = Layer3Config(
+            nvd=NVDConfig(), msf=MSFConfig(),
+            auth=AuthCheckConfig(),
+        )
+        searcher = CVESearcher(config)
+
+        searcher._nvd_client = AsyncMock()
+        searcher._nvd_client.search = AsyncMock(return_value=[
+            CVEEntry(cve_id="CVE-2021-36260", severity="CRITICAL", source="nvd"),
+        ])
+        searcher._msf_client = AsyncMock()
+        searcher._msf_client.find_module_for_cve = MagicMock(return_value=None)
+
+        storage = AsyncMock()
+        searcher.storage = storage
+
+        mock_auth_checker = AsyncMock()
+        mock_auth_checker.check = AsyncMock(return_value=[
+            AuthInfo(port=80, protocol="http", has_login=True, auth_type="basic",
+                     raw_response="HTTP 401"),
+        ])
+        searcher._auth_checker = mock_auth_checker
+
+        item = CameraFingerprint(
+            ip="192.168.1.1", port=80, weight=1.0,
+            fingerprint=Fingerprint(vendor="hikvision", model="DS-2CD2142", version="V5.4.5"),
+        )
+
+        result = await searcher.process(item)
+
+        assert result is not None
+        assert "CVE-2021-36260" in result.fingerprint.cves
+        assert len(result.auth_info) == 1
+        assert result.auth_info[0].has_login is True
+        assert result.auth_info[0].auth_type == "basic"
+        assert searcher._auth_checked == 1
+        assert searcher._auth_found == 1
+
+    @pytest.mark.asyncio
+    async def test_full_pipeline_no_auth_no_cve(self):
+        """Target with no vendor and no auth returns empty cves + empty auth_info."""
+        from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+        from src.core.config import Layer3Config, NVDConfig, MSFConfig, AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+
+        config = Layer3Config(
+            nvd=NVDConfig(), msf=MSFConfig(),
+            auth=AuthCheckConfig(),
+        )
+        searcher = CVESearcher(config)
+        searcher._nvd_client = AsyncMock()
+        searcher._msf_client = AsyncMock()
+
+        mock_auth_checker = AsyncMock()
+        mock_auth_checker.check = AsyncMock(return_value=[])
+        searcher._auth_checker = mock_auth_checker
+
+        item = CameraFingerprint(
+            ip="192.168.1.1", port=9999, weight=0.0,
+            fingerprint=Fingerprint(),
+        )
+
+        result = await searcher.process(item)
+        assert result is not None
+        assert result.fingerprint.cves == []
+        assert result.auth_info == []
