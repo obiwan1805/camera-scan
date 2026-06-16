@@ -262,3 +262,110 @@ class TestBannerDetector:
             result = await detector.detect("1.1.1.1", 22, "ssh")
 
         assert len(result.raw_response) <= 512
+
+
+class TestMSFDetector:
+    @pytest.fixture
+    def detector(self):
+        from src.layers.layer3_cve_searcher.auth_checker.msf_detector import MSFDetector
+        from src.core.config import AuthCheckConfig
+        msf_client = AsyncMock()
+        return MSFDetector(AuthCheckConfig(), msf_client)
+
+    @pytest.mark.asyncio
+    async def test_detect_http_basic_auth(self, detector):
+        """MSF http_login detects Basic auth on 401 response."""
+        detector._msf_client._call = AsyncMock(side_effect=[
+            {"id": "1"},
+            None,
+            {"data": b"[*] 1.1.1.1:80 - HTTP 401 - requires authentication\n[*] WWW-Authenticate: Basic realm=\"camera\"\n", "busy": False},
+            None,
+        ])
+        detector._msf_client._val = MagicMock(side_effect=lambda r, k: r.get(k) if r else None)
+
+        result = await detector.detect("1.1.1.1", 80, "http")
+        assert result.has_login is True
+        assert result.auth_type in ("basic", "digest", "unknown")
+
+    @pytest.mark.asyncio
+    async def test_detect_http_form_login(self, detector):
+        """Form heuristic detects password input in HTML."""
+        import aiohttp
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value='<html><form><input type="password" name="pw"></form></html>')
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_response),
+            __aexit__=AsyncMock(return_value=False),
+        ))
+
+        mock_session_instance = AsyncMock()
+        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
+            result = await detector._detect_form_login("1.1.1.1", 80, "http")
+
+        assert result is not None
+        assert result.has_login is True
+        assert result.auth_type == "form"
+
+    @pytest.mark.asyncio
+    async def test_detect_http_no_form(self, detector):
+        """No password input means no form login detected."""
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value='<html><h1>Camera Stream</h1></html>')
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_response),
+            __aexit__=AsyncMock(return_value=False),
+        ))
+
+        mock_session_instance = AsyncMock()
+        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
+            result = await detector._detect_form_login("1.1.1.1", 80, "http")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_detect_msf_client_none(self):
+        """MSFDetector with no MSF client falls back to form-only detection."""
+        from src.layers.layer3_cve_searcher.auth_checker.msf_detector import MSFDetector
+        from src.core.config import AuthCheckConfig
+        detector = MSFDetector(AuthCheckConfig(), msf_client=None)
+
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value='<html><h1>No login</h1></html>')
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_response),
+            __aexit__=AsyncMock(return_value=False),
+        ))
+
+        mock_session_instance = AsyncMock()
+        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
+            result = await detector.detect("1.1.1.1", 80, "http")
+
+        assert result.has_login is False
+
+    @pytest.mark.asyncio
+    async def test_detect_connection_error(self, detector):
+        """Connection error results in has_login=False."""
+        detector._msf_client = None
+
+        with patch("aiohttp.ClientSession", side_effect=Exception("connection failed")):
+            result = await detector.detect("1.1.1.1", 80, "http")
+
+        assert result.has_login is False
