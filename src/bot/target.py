@@ -22,55 +22,79 @@ class TargetGroup(app_commands.Group):
 
     @app_commands.command(name="help", description="Show target command help")
     async def target_help(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="/target — Scan Input Management", color=0x5865F2)
+        embed = discord.Embed(
+            title="/target — Scan Input Management",
+            description=(
+                "Manage what gets scanned. Two input modes:\n"
+                "**CIDR mode** — Add IPs/ranges/CIDRs → masscan sweeps them\n"
+                "**Import mode** — Stage masscan output → fingerprinter only"
+            ),
+            color=0x5865F2,
+        )
+
         embed.add_field(
-            name="/target list `[type]`",
-            value="List all targets with paginated embeds. Optionally filter by\n"
-                  "type (cidr/ip/range). Shows ID, target, type, and IP count.\n"
-                  "Works anytime, even during a running scan.",
+            name="Commands",
+            value=(
+                "`/target add <target>` — Add IP, CIDR, or range\n"
+                "`/target remove <id>` — Remove by ID\n"
+                "`/target list [type]` — List all (works during scan)\n"
+                "`/target import <file>` — Bulk import from text file\n"
+                "`/target export` — Export to data/cidrs.txt\n"
+                "`/target clear` — Remove all (with confirmation)\n"
+                "`/target import-masscan <file>` — Stage masscan -oL output"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/target add `<target>`",
-            value="Add a scan target — IP, CIDR, or IP range.\n"
-                  "e.g. `192.168.1.0/24`, `10.0.0.1`, `1.0.0.0-1.0.255.255`\n"
-                  "Cannot be used while a scan is running.",
+            name="Target formats",
+            value=(
+                "```\n"
+                "192.168.1.0/24        ← CIDR (256 IPs)\n"
+                "10.0.0.1              ← single IP\n"
+                "1.0.0.0-1.0.255.255   ← IP range (65536 IPs)\n"
+                "```"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/target remove `<id>`",
-            value="Remove a target by its ID.\n"
-                  "Cannot be used while a scan is running.",
+            name="Example: CIDR scan",
+            value=(
+                "```\n"
+                "/target add 192.168.1.0/24\n"
+                "→ Added 192.168.1.0/24 (cidr) — 256 IPs\n"
+                "\n/scan start\n"
+                "```"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/target import `<file>`",
-            value="Bulk import targets from a text file (one per line).\n"
-                  "Duplicates are silently skipped.\n"
-                  "Cannot be used while a scan is running.",
+            name="Example: Masscan import",
+            value=(
+                "```\n"
+                "/target import-masscan results.txt\n"
+                "→ Imported 5,000 hosts, 8,000 entries\n"
+                "\n/scan start\n"
+                "→ Runs Layer 2 only (no masscan)\n"
+                "```\n"
+                "File format: `open tcp <port> <ip> <timestamp>`"
+            ),
             inline=False,
         )
+
         embed.add_field(
-            name="/target export",
-            value="Export current targets to `data/cidrs.txt` for backup.\n"
-                  "Works anytime.",
+            name="Rules",
+            value=(
+                "- `list` and `export` work anytime\n"
+                "- All other commands require scan to be idle\n"
+                "- `clear` also deletes paused.conf"
+            ),
             inline=False,
         )
-        embed.add_field(
-            name="/target clear",
-            value="Remove ALL targets (with confirmation prompt).\n"
-                  "Also deletes `paused.conf` if it exists.\n"
-                  "Cannot be used while a scan is running.",
-            inline=False,
-        )
-        embed.add_field(
-            name="/target import-masscan `<file>`",
-            value="Import masscan `-oL` output for fingerprinting.\n"
-                  "Parses the file and stages it. Use `/scan start` to begin\n"
-                  "fingerprinting (runs Layer 2 only, no masscan).\n"
-                  "Only works when no scan is running.",
-            inline=False,
-        )
+
+        embed.set_footer(text="See also: /scan help, /config help")
         await safe_send(interaction, embed=embed)
 
     @app_commands.command(name="add", description="Add a scan target (IP, CIDR, or range)")

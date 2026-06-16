@@ -53,3 +53,65 @@ class ConfirmView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         await interaction.response.edit_message(content="Cancelled.", view=None)
+
+
+async def global_help(interaction: discord.Interaction):
+    """Global /help — shows all command groups and a quick-start guide."""
+    embed = discord.Embed(
+        title="Camera Scan Bot — Help",
+        description=(
+            "Discovers IP cameras, fingerprints them, and assesses vulnerabilities.\n\n"
+            "**Pipeline:** `targets → masscan → fingerprinter → results`"
+        ),
+        color=0x57F287,
+    )
+
+    embed.add_field(
+        name="Quick start",
+        value=(
+            "```\n"
+            "/target add 192.168.1.0/24\n"
+            "/scan start\n"
+            "/scan progress\n"
+            "```"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Command groups",
+        value=(
+            "**`/scan`** — Start, pause, stop, check progress\n"
+            "**`/target`** — Add/import IPs, CIDRs, ranges\n"
+            "**`/config`** — Tune scan rate, timeouts, concurrency\n"
+            "**`/signature`** — Manage fingerprint patterns\n"
+            "**`/poc`** — Store proof-of-concept scripts\n"
+            "**`/dict`** — Password/credential dictionaries"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Getting help",
+        value=(
+            "Every group has detailed help:\n"
+            "`/scan help`  `/target help`  `/config help`\n"
+            "`/signature help`  `/poc help`  `/dict help`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Two scan modes",
+        value=(
+            "**CIDR mode** — `/target add` then `/scan start`\n"
+            "Runs masscan + fingerprinter.\n\n"
+            "**Import mode** — `/target import-masscan` then `/scan start`\n"
+            "Fingerprinter only (no masscan, no root)."
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text="Type any /<group> help for detailed usage and examples")
+    await interaction.response.send_message(embed=embed)
+

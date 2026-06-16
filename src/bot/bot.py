@@ -21,6 +21,7 @@ from .dict import DictGroup
 from .target import TargetGroup
 from .signature import SignatureGroup
 from .cve import CveGroup
+from .common import global_help
 
 
 class ScanBot(commands.Bot):
@@ -65,11 +66,22 @@ class ScanBot(commands.Bot):
 
             for group in self._command_groups:
                 self.tree.add_command(group, guild=guild)
+
+            # Register global /help command (guild-scoped for instant sync)
+            @self.tree.command(name="help", description="Show all bot commands and quick start", guild=guild)
+            async def _help(interaction: discord.Interaction):
+                await global_help(interaction)
+
             await self.tree.sync(guild=guild)
             print(f"Synced commands to Server ID: {guild_id}")
         else:
             for group in self._command_groups:
                 self.tree.add_command(group)
+
+            @self.tree.command(name="help", description="Show all bot commands and quick start")
+            async def _help(interaction: discord.Interaction):
+                await global_help(interaction)
+
             await self.tree.sync()
             print("Synced commands globally.")
 
