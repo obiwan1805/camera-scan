@@ -423,6 +423,158 @@ async def cmd_test_msf(args):
 
 
 # ---------------------------------------------------------------------------
+# run-layer3: full CVE search on all fingerprints in DB
+# ---------------------------------------------------------------------------
+
+
+async def cmd_run_layer3(args):
+    """Run Layer 3 CVE search on all fingerprints in the database."""
+    from src.storage.sqlite_backend import SQLiteBackend
+    from src.layers.layer3_cve_searcher.cve_searcher import CVESearcher
+    from src.layers.layer3_cve_searcher.classifier import (
+        classify_exploitability,
+        STATUS_EMOJI,
+    )
+    from src.core.durable_queue import DurableQueue
+
+    config = _load_config()
+    db_path = args.db or config.storage.path
+
+    print(f"Layer 3 CVE Search — run-layer3")
+    print(f"Database: {db_path}")
+    print(HEADER_BAR)
+
+    storage = SQLiteBackend(db_path)
+    await storage.connect()
+
+    # Read all fingerprints
+    try:
+        rows = await storage._conn.execute_fetchall(
+            "SELECT ip, port, fingerprint, weight FROM fingerprints"
+        )
+    except Exception as e:
+        print(f"Error reading database: {e}")
+        await storage.disconnect()
+        return
+
+    if not rows:
+        print("No fingerprints found in database.")
+        await storage.disconnect()
+        return
+
+    # Parse into CameraFingerprint objects
+    items = []
+    for ip, port, fp_json, weight in rows:
+        try:
+            fp_data = json.loads(fp_json) if isinstance(fp_json, str) else fp_json
+            fp = Fingerprint(**fp_data)
+            items.append(CameraFingerprint(ip=ip, port=port, fingerprint=fp, weight=weight or 0.0))
+        except Exception as e:
+            logger.warning(f"Skip {ip}:{port} — parse error: {e}")
+
+    # Filter
+    if args.vendor:
+        vendor_lower = args.vendor.lower()
+        items = [i for i in items if i.fingerprint.vendor and i.fingerprint.vendor.lower() == vendor_lower]
+        print(f"Filtered by vendor: {args.vendor} ({len(items)} targets)")
+
+    if args.limit:
+        items = items[: args.limit]
+        print(f"Limited to {args.limit} targets")
+
+    total = len(items)
+    print(f"Processing {total} targets...\n")
+
+    # Init CVESearcher (without queue — we'll call process() directly)
+    cve_searcher = CVESearcher(config.layer3, None, None, storage)
+
+    # Init clients manually
+    from src.layers.layer3_cve_searcher.clients.nvd_client import NVDClient
+    from src.layers.layer3_cve_searcher.clients.msf_rpc_client import MSFRPCClient
+
+    cve_searcher._nvd_client = NVDClient(config.layer3.nvd)
+    cve_searcher._msf_client = MSFRPCClient(config.layer3.msf)
+    try:
+        await cve_searcher._msf_client.connect()
+        print("msfrpcd: Connected")
+    except Exception as e:
+        print(f"msfrpcd: Failed ({e}) — MSF check will be skipped")
+        cve_searcher._msf_client = None
+
+    print()
+
+    # Process all items with concurrency
+    semaphore = asyncio.Semaphore(args.concurrency)
+    results = []
+    processed = 0
+    cve_found = 0
+    failed = 0
+
+    async def process_one(item):
+        nonlocal processed, cve_found, failed
+        async with semaphore:
+            try:
+                enriched = await cve_searcher.process(item)
+                if enriched and enriched.fingerprint.cves:
+                    cve_found += 1
+                results.append(enriched or item)
+            except Exception as e:
+                logger.error(f"Error {item.ip}:{item.port}: {e}")
+                results.append(item)
+                failed += 1
+            finally:
+                processed += 1
+                if processed % 50 == 0 or processed == total:
+                    print(f"  [{processed}/{total}] CVE found: {cve_found} | Failed: {failed}")
+
+    tasks = [asyncio.create_task(process_one(item)) for item in items]
+    await asyncio.gather(*tasks)
+
+    # Save enriched fingerprints back to DB
+    saved = 0
+    for item in results:
+        if item.fingerprint.cves:
+            try:
+                await storage._conn.execute(
+                    "UPDATE fingerprints SET fingerprint=? WHERE ip=? AND port=?",
+                    (item.fingerprint.model_dump_json(), item.ip, item.port)
+                )
+                saved += 1
+            except Exception as e:
+                logger.error(f"Save error {item.ip}:{item.port}: {e}")
+    await storage._conn.commit()
+
+    # Summary
+    print(f"\n{HEADER_BAR}")
+    print(f"Done! Processed: {processed} | CVE found: {cve_found} | Failed: {failed} | Saved: {saved}")
+
+    # Show top results
+    cve_items = [i for i in results if i.fingerprint.cves]
+    if cve_items:
+        print(f"\nTargets with CVEs ({len(cve_items)}):\n")
+        headers = ["IP", "Port", "Vendor", "Model", "CVEs"]
+        widths = [18, 6, 12, 20, 40]
+        rows_out = []
+        for item in cve_items[:30]:
+            fp = item.fingerprint
+            cves_str = ", ".join(fp.cves[:3])
+            if len(fp.cves) > 3:
+                cves_str += f" +{len(fp.cves)-3}"
+            rows_out.append([item.ip, str(item.port), fp.vendor or "—", fp.model or "—", cves_str])
+        _print_table(headers, rows_out, widths)
+
+    # Cleanup
+    if cve_searcher._nvd_client:
+        await cve_searcher._nvd_client.close()
+    if cve_searcher._msf_client:
+        try:
+            await cve_searcher._msf_client.disconnect()
+        except Exception:
+            pass
+    await storage.disconnect()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -506,6 +658,14 @@ def main():
     p_nvd.add_argument("query", help="CVE ID (e.g., CVE-2021-36260) or keyword (e.g., hikvision)")
     p_nvd.add_argument("--api-key", help="Override NVD API key")
     p_nvd.set_defaults(func=cmd_test_nvd)
+
+    # run-layer3
+    p_run = subparsers.add_parser("run-layer3", help="Run full Layer 3 CVE search on all DB fingerprints")
+    p_run.add_argument("--db", help="Path to SQLite database")
+    p_run.add_argument("--limit", type=int, help="Limit number of targets")
+    p_run.add_argument("--vendor", help="Filter by vendor name")
+    p_run.add_argument("--concurrency", type=int, default=10, help="Concurrent targets (default: 10)")
+    p_run.set_defaults(func=cmd_run_layer3)
 
     # test-msf
     p_msf = subparsers.add_parser("test-msf", help="Test msfrpcd connection and module search")

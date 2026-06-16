@@ -175,25 +175,71 @@ class MSFRPCClient:
         return all_modules
 
     async def check(self, module_name: str, ip: str, port: int) -> dict:
-        """Run MSF check on a single target."""
+        """Run MSF module on a target via console and parse output.
+
+        Creates a temporary console, executes the module, waits for completion,
+        then parses output: [+] lines indicate vulnerability.
+        """
         parts = module_name.split("/")
         if len(parts) < 3:
             return {"ip": ip, "port": port, "status": "unknown", "cves": []}
         module_type = parts[0]
         module_path = "/".join(parts[1:])
 
+        console_id = None
         try:
-            response = await self._call(
-                "module.execute",
-                module_type,
-                module_path,
-                {"RHOSTS": ip, "RPORT": str(port)},
+            # Create console
+            resp = await self._call("console.create")
+            console_id = self._val(resp, "id")
+            if isinstance(console_id, bytes):
+                console_id = console_id.decode()
+
+            # Write module commands
+            cmd = (
+                f"use {module_type}/{module_path}\n"
+                f"set RHOSTS {ip}\n"
+                f"set RPORT {port}\n"
+                f"run\n"
             )
-            job_id = self._val(response, "result")
-            return {"ip": ip, "port": port, "status": "launched", "job_id": job_id, "cves": []}
+            await self._call("console.write", str(console_id), cmd)
+
+            # Poll until console is not busy
+            output = ""
+            elapsed = 0
+            interval = 2
+            timeout = self.config.check_timeout
+
+            while elapsed < timeout:
+                await asyncio.sleep(interval)
+                elapsed += interval
+                resp = await self._call("console.read", str(console_id))
+                chunk = self._val(resp, "data") or b""
+                if isinstance(chunk, bytes):
+                    chunk = chunk.decode(errors="replace")
+                output += chunk
+                busy = self._val(resp, "busy")
+                if not busy and "module execution completed" in output.lower():
+                    break
+
+            # Parse result — [+] means vulnerable
+            status = "safe"
+            for line in output.split("\n"):
+                if line.startswith("[+]"):
+                    status = "vulnerable"
+                    break
+
+            self._logger.info(f"MSF check {module_name} on {ip}:{port} -> {status}")
+            return {"ip": ip, "port": port, "status": status, "output": output, "cves": []}
+
         except Exception as e:
             self._logger.error(f"MSF check failed for {module_name} on {ip}:{port}: {e}")
             return {"ip": ip, "port": port, "status": "error", "cves": []}
+        finally:
+            if console_id is not None:
+                try:
+                    await self._call("console.destroy", str(console_id))
+                except Exception:
+                    pass
 
     def find_module_for_cve(self, vendor: str, cve_id: str) -> Optional[dict]:
         """Find MSF module that references a specific CVE (from cache)."""
