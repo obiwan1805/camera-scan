@@ -99,6 +99,8 @@ class ScanBot(commands.Bot):
                 config.layer2.prober_timeout = self._overrides["prober_timeout"]
             if "batch_size" in self._overrides:
                 config.layers.batch_size = self._overrides["batch_size"]
+            if "raw_responses" in self._overrides:
+                config.layer2.log_raw_responses = self._overrides["raw_responses"]
 
             builder = PipelineBuilder(config)
             self.storage = builder.build_storage()
@@ -204,6 +206,8 @@ class ScanBot(commands.Bot):
                 config.layer2.import_feed_batch = self._overrides["import_feed_batch"]
             if "import_feed_interval" in self._overrides:
                 config.layer2.import_feed_interval = self._overrides["import_feed_interval"]
+            if "raw_responses" in self._overrides:
+                config.layer2.log_raw_responses = self._overrides["raw_responses"]
 
             builder = PipelineBuilder(config)
             self.storage = builder.build_storage()
@@ -384,6 +388,7 @@ class ScanBot(commands.Bot):
         prober_timeout = self._overrides.get("prober_timeout", defaults.layer2.prober_timeout)
         feed_batch = self._overrides.get("import_feed_batch", defaults.layer2.import_feed_batch)
         feed_interval = self._overrides.get("import_feed_interval", defaults.layer2.import_feed_interval)
+        raw_responses = self._overrides.get("raw_responses", defaults.layer2.log_raw_responses)
 
         embed = discord.Embed(title="Current Config", color=0x57F287)
 
@@ -397,7 +402,8 @@ class ScanBot(commands.Bot):
             f"max_concurrent:       {max_concurrent}\n"
             f"prober_timeout:       {prober_timeout}s\n"
             f"import_feed_batch:    {feed_batch}\n"
-            f"import_feed_interval: {feed_interval}s"
+            f"import_feed_interval: {feed_interval}s\n"
+            f"raw_responses:        {'on' if raw_responses else 'off'}"
         )
         embed.add_field(name="Layer 2 — Fingerprinter", value=f"```\n{layer2}\n```", inline=False)
 

@@ -31,6 +31,7 @@ class Layer2Config:
     prober_timeout: int = 10
     import_feed_batch: int = 100
     import_feed_interval: int = 5
+    log_raw_responses: bool = False
 
 
 @dataclass
@@ -102,6 +103,7 @@ class Config:
                 prober_timeout=data.get("layers", {}).get("layer2", {}).get("prober_timeout", 10),
                 import_feed_batch=data.get("layers", {}).get("layer2", {}).get("import_feed_batch", 100),
                 import_feed_interval=data.get("layers", {}).get("layer2", {}).get("import_feed_interval", 5),
+                log_raw_responses=data.get("layers", {}).get("layer2", {}).get("log_raw_responses", False),
             ),
             layer3=Layer3Config(
                 enabled=data.get("layer3", {}).get("enabled", True),

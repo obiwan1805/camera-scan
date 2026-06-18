@@ -144,7 +144,7 @@ class Fingerprinter(Filter):
             ip, port = item
             fp, raw_responses = await self._fingerprint(ip, port)
 
-            if raw_responses:
+            if raw_responses and getattr(self.config, 'log_raw_responses', False):
                 await self.storage.submit("raw_responses", raw_responses)
 
             if fp:

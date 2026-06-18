@@ -14,6 +14,7 @@ layers:
     prober_timeout: 15         # seconds per probe request (http, https, rtsp, onvif, favicon)
     import_feed_batch: 50      # entries per feed batch during masscan import
     import_feed_interval: 5     # seconds between feed batches
+    log_raw_responses: false   # store prober raw responses to raw_responses table
     modules:
       - favicon
       - http

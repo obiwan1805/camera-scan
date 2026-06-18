@@ -1,4 +1,4 @@
-"""Config command group — /config show|scan_rate|max_concurrent|prober_timeout|help."""
+"""Config command group — /config show|scan_rate|max_concurrent|prober_timeout|raw_responses|help."""
 import yaml
 from pathlib import Path
 import discord
@@ -16,10 +16,11 @@ _CONFIG_MAP = {
     "import_feed_batch":   ("layers", "layer2", "import_feed_batch"),
     "import_feed_interval":("layers", "layer2", "import_feed_interval"),
     "batch_size":          ("layers", "layer1", "batch_size"),
+    "raw_responses":       ("layers", "layer2", "log_raw_responses"),
 }
 
 
-def _save_to_yaml(key: str, value: int) -> None:
+def _save_to_yaml(key: str, value) -> None:
     """Write a single config value back to config/default.yaml."""
     path = _CONFIG_PATH
     data = {}
@@ -70,7 +71,8 @@ class ConfigGroup(app_commands.Group):
             name="Layer 2 — Fingerprinter",
             value=(
                 "`/config max_concurrent <n>` — concurrent probes (default: 200)\n"
-                "`/config prober_timeout <n>` — probe timeout in sec (1-60, default: 10)"
+                "`/config prober_timeout <n>` — probe timeout in sec (1-60, default: 10)\n"
+                "`/config raw_responses <bool>` — store prober raw responses to DB (default: false)"
             ),
             inline=False,
         )
@@ -182,3 +184,14 @@ class ConfigGroup(app_commands.Group):
         self.bot._overrides["import_feed_interval"] = value
         _save_to_yaml("import_feed_interval", value)
         await safe_send(interaction, content=f"import_feed_interval set to **{value}s** — will wait {value}s between feed batches. Saved to config.")
+
+    @app_commands.command(name="raw_responses", description="Toggle storing prober raw responses to DB")
+    @app_commands.describe(value="True to log raw responses, False to skip")
+    async def config_raw_responses(self, interaction: discord.Interaction, value: bool):
+        if not self._check_idle(interaction):
+            await safe_send(interaction, content="Cannot change config while scan is running.")
+            return
+        self.bot._overrides["raw_responses"] = value
+        _save_to_yaml("raw_responses", value)
+        state = "ON — prober responses stored to raw_responses table" if value else "OFF — prober responses discarded after matching"
+        await safe_send(interaction, content=f"raw_responses logging **{state}**. Saved to config.")
