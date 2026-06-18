@@ -1,6 +1,8 @@
 """SQLite backend with concurrency-safe write pipeline."""
 import asyncio
 import aiosqlite
+import csv
+import io
 import json
 from typing import Any, List, Optional
 from .base import StorageBackend
@@ -541,3 +543,56 @@ class SQLiteBackend(StorageBackend):
         )
         await self._conn.commit()
         return cursor.rowcount
+
+    # --- Admin operations for /target clear (bypass writer queue — direct SQL) ---
+
+    _RESULTS_TABLES = ("port_scans", "fingerprints", "raw_responses", "claims")
+
+    async def clear_results(self) -> dict[str, int]:
+        """Delete all rows from results tables. Returns {table: deleted_count}."""
+        if not self._conn:
+            await self.connect()
+        counts: dict[str, int] = {}
+        for table in self._RESULTS_TABLES:
+            cursor = await self._conn.execute(f"DELETE FROM {table}")
+            counts[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        await self._conn.commit()
+        return counts
+
+    async def dump_table_csv(self, table: str) -> tuple[str, int]:
+        """Dump a results table to CSV. Returns (csv_string, row_count)."""
+        if not self._conn:
+            await self.connect()
+
+        if table == "port_scans":
+            cursor = await self._conn.execute(
+                "SELECT ip, port, status, timestamp FROM port_scans ORDER BY ip, port"
+            )
+            rows = await cursor.fetchall()
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(["ip", "port", "status", "timestamp"])
+            writer.writerows(rows)
+            return buf.getvalue(), len(rows)
+
+        if table == "fingerprints":
+            cursor = await self._conn.execute(
+                "SELECT ip, port, protocol, weight, timestamp, fingerprint FROM fingerprints ORDER BY ip, port"
+            )
+            rows = await cursor.fetchall()
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(["ip", "port", "protocol", "vendor", "model", "version", "weight", "cves", "timestamp"])
+            for ip, port, protocol, weight, timestamp, fp_json in rows:
+                try:
+                    fp = json.loads(fp_json) if fp_json else {}
+                except Exception:
+                    fp = {}
+                vendor = fp.get("vendor") or ""
+                model = fp.get("model") or ""
+                version = fp.get("version") or ""
+                cves = ";".join(fp.get("cves") or [])
+                writer.writerow([ip, port, protocol or "", vendor, model, version, weight, cves, timestamp])
+            return buf.getvalue(), len(rows)
+
+        raise ValueError(f"dump_table_csv does not support table '{table}'")

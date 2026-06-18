@@ -1,5 +1,6 @@
 """Target command group — manage scan inputs (IPs, CIDRs, ranges)."""
 import asyncio
+import io
 import ipaddress
 import discord
 from discord import app_commands
@@ -8,6 +9,76 @@ from .common import safe_send, ConfirmView, PaginatedView
 
 from src.utils.network import classify_target, count_ips_in_cidr, count_ips_in_range
 from src.layers import PortScanner
+
+
+class ClearTargetsView(discord.ui.View):
+    """Two-button view: export then delete, or just delete."""
+
+    def __init__(self, bot: 'ScanBot', timeout: int = 60):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+
+    async def _execute_clear(self, interaction: discord.Interaction, export: bool):
+        await interaction.response.defer()
+
+        storage = self.bot.db
+        files: list[discord.File] = []
+        export_summary = ""
+
+        if export:
+            try:
+                l1_csv, l1_count = await storage.dump_table_csv("port_scans")
+                l2_csv, l2_count = await storage.dump_table_csv("fingerprints")
+                if l1_count > 0:
+                    files.append(discord.File(io.BytesIO(l1_csv.encode()), filename="layer1_port_scans.csv"))
+                if l2_count > 0:
+                    files.append(discord.File(io.BytesIO(l2_csv.encode()), filename="layer2_fingerprints.csv"))
+                export_summary = f" Exported {l1_count} layer-1 + {l2_count} layer-2 rows."
+            except Exception as e:
+                await interaction.followup.send(f"Export failed: {e}")
+                return
+
+        target_rows = await storage.generic_list("targets")
+        for r in target_rows:
+            await storage.generic_delete("targets", r["id"])
+
+        results_counts = await storage.clear_results()
+
+        paused = Path("paused.conf")
+        if paused.exists():
+            paused.unlink()
+
+        scans_dir = Path("data/scans")
+        deleted_files = 0
+        if scans_dir.exists():
+            for f in scans_dir.glob("results_*.txt"):
+                try:
+                    f.unlink()
+                    deleted_files += 1
+                except Exception:
+                    pass
+
+        total_results = sum(results_counts.values())
+        msg = (
+            f"Cleared **{len(target_rows)}** targets, **{total_results}** result rows, "
+            f"**{deleted_files}** masscan files.{export_summary}"
+        )
+        await interaction.followup.send(content=msg, files=files or None)
+
+    @discord.ui.button(label="Export then delete", style=discord.ButtonStyle.success, row=0)
+    async def export_then_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await self._execute_clear(interaction, export=True)
+
+    @discord.ui.button(label="Just delete", style=discord.ButtonStyle.danger, row=0)
+    async def just_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await self._execute_clear(interaction, export=False)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="Cancelled.", embed=None, view=None)
 
 
 class TargetGroup(app_commands.Group):
@@ -250,29 +321,28 @@ class TargetGroup(app_commands.Group):
             msg += f" ({errors} duplicates/errors skipped)"
         await safe_send(interaction, content=msg)
 
-    @app_commands.command(name="clear", description="Remove ALL scan targets")
+    @app_commands.command(name="clear", description="Remove ALL targets, scan results, and masscan files")
     async def target_clear(self, interaction: discord.Interaction):
         if not self._check_idle(interaction):
             await safe_send(interaction, content="Scan is running. Pause or stop first.")
             return
 
-        storage = self.bot.db
-
-        async def on_confirm(i: discord.Interaction):
-            rows = await storage.generic_list("targets")
-            count = 0
-            for r in rows:
-                await storage.generic_delete("targets", r["id"])
-                count += 1
-            paused = Path("paused.conf")
-            if paused.exists():
-                paused.unlink()
-            await i.response.edit_message(
-                content=f"Cleared {count} targets.", embed=None, view=None
-            )
-
-        view = ConfirmView(on_confirm)
-        embed = discord.Embed(title="Clear all targets?", color=0xED4245)
+        embed = discord.Embed(
+            title="Clear all scan data?",
+            description=(
+                "This wipes **everything** for a fresh campaign:\n"
+                "- `targets` table\n"
+                "- `port_scans` (Layer 1 results)\n"
+                "- `fingerprints` (Layer 2 results)\n"
+                "- `raw_responses`\n"
+                "- `paused.conf`\n"
+                "- `data/scans/results_*.txt` files\n\n"
+                "**Export then delete** — attach CSVs of Layer 1 + Layer 2 first.\n"
+                "**Just delete** — wipe immediately, no export."
+            ),
+            color=0xED4245,
+        )
+        view = ClearTargetsView(self.bot)
         await safe_send(interaction, embed=embed, view=view)
 
     @app_commands.command(name="export", description="Export targets to data/cidrs.txt")
