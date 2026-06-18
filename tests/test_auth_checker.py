@@ -309,86 +309,21 @@ class TestMSFDetector:
         assert result.auth_type in ("basic", "digest", "unknown")
 
     @pytest.mark.asyncio
-    async def test_detect_http_form_login(self, detector):
-        """Form heuristic detects password input in HTML."""
-        import aiohttp
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.text = AsyncMock(return_value='<html><form><input type="password" name="pw"></form></html>')
-
-        mock_session = AsyncMock()
-        mock_session.get = MagicMock(return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=mock_response),
-            __aexit__=AsyncMock(return_value=False),
-        ))
-
-        mock_session_instance = AsyncMock()
-        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
-            result = await detector._detect_form_login("1.1.1.1", 80, "http")
-
-        assert result is not None
-        assert result.has_login is True
-        assert result.auth_type == "form"
-
-    @pytest.mark.asyncio
-    async def test_detect_http_no_form(self, detector):
-        """No password input means no form login detected."""
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.text = AsyncMock(return_value='<html><h1>Camera Stream</h1></html>')
-
-        mock_session = AsyncMock()
-        mock_session.get = MagicMock(return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=mock_response),
-            __aexit__=AsyncMock(return_value=False),
-        ))
-
-        mock_session_instance = AsyncMock()
-        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
-            result = await detector._detect_form_login("1.1.1.1", 80, "http")
-
-        assert result is None
-
-    @pytest.mark.asyncio
     async def test_detect_msf_client_none(self):
-        """MSFDetector with no MSF client falls back to form-only detection."""
+        """MSFDetector with no MSF client returns has_login=False."""
         from src.layers.layer3_cve_searcher.auth_checker.msf_detector import MSFDetector
         from src.core.config import AuthCheckConfig
         detector = MSFDetector(AuthCheckConfig(), msf_client=None)
 
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.text = AsyncMock(return_value='<html><h1>No login</h1></html>')
-
-        mock_session = AsyncMock()
-        mock_session.get = MagicMock(return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=mock_response),
-            __aexit__=AsyncMock(return_value=False),
-        ))
-
-        mock_session_instance = AsyncMock()
-        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
-            result = await detector.detect("1.1.1.1", 80, "http")
-
+        result = await detector.detect("1.1.1.1", 80, "http")
         assert result.has_login is False
 
     @pytest.mark.asyncio
     async def test_detect_connection_error(self, detector):
-        """Connection error results in has_login=False."""
-        detector._msf_client = None
+        """MSF connection error results in has_login=False."""
+        detector._msf_client._call = AsyncMock(side_effect=Exception("connection failed"))
 
-        with patch("aiohttp.ClientSession", side_effect=Exception("connection failed")):
-            result = await detector.detect("1.1.1.1", 80, "http")
-
+        result = await detector.detect("1.1.1.1", 80, "http")
         assert result.has_login is False
 
 
@@ -435,24 +370,22 @@ class TestAuthChecker:
         assert results[0].has_login is False
 
     @pytest.mark.asyncio
-    async def test_check_http_port_uses_msf_detector(self, checker):
-        """HTTP port routes to MSFDetector (form fallback when msf_client=None)."""
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.text = AsyncMock(return_value='<form><input type="password"></form>')
+    async def test_check_http_port_uses_form_detector(self, checker):
+        """HTTP port routes to FormDetector + MSFDetector in parallel."""
+        from src.storage.schemas import AuthInfo
 
-        mock_session_instance = AsyncMock()
-        mock_session_instance.get = MagicMock(return_value=AsyncMock(
-            __aenter__=AsyncMock(return_value=mock_response),
-            __aexit__=AsyncMock(return_value=False),
+        form_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="form",
+            form_action="/login", password_field="pass",
+        )
+        checker._form.detect = AsyncMock(return_value=form_result)
+        checker._msf.detect = AsyncMock(return_value=AuthInfo(
+            port=80, protocol="http", has_login=False, auth_type="unknown",
         ))
-        mock_session_instance.__aenter__ = AsyncMock(return_value=mock_session_instance)
-        mock_session_instance.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("aiohttp.ClientSession", return_value=mock_session_instance):
-            from src.storage.schemas import CameraFingerprint, Fingerprint
-            item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
-            results = await checker.check(item)
+        from src.storage.schemas import CameraFingerprint, Fingerprint
+        item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
+        results = await checker.check(item)
 
         assert len(results) == 1
         assert results[0].has_login is True
@@ -469,6 +402,106 @@ class TestAuthChecker:
         item = CameraFingerprint(ip="1.1.1.1", port=22, fingerprint=Fingerprint())
         results = await checker.check(item)
         assert results == []
+
+
+class TestAuthCheckerMerge:
+    """AuthChecker merge logic: FormDetector + MSFDetector in parallel."""
+
+    @pytest.mark.asyncio
+    async def test_form_detector_result_preferred(self):
+        """FormDetector result is preferred over MSFDetector when form has details."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        form_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="form",
+            form_action="/login", password_field="pass",
+        )
+        msf_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="basic",
+        )
+
+        checker._form.detect = AsyncMock(return_value=form_result)
+        checker._msf.detect = AsyncMock(return_value=msf_result)
+
+        item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].auth_type == "form"
+        assert results[0].form_action == "/login"
+
+    @pytest.mark.asyncio
+    async def test_msf_result_used_when_form_finds_nothing(self):
+        """MSFDetector result used when FormDetector finds nothing."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        form_result = AuthInfo(
+            port=80, protocol="http", has_login=False, auth_type="unknown",
+        )
+        msf_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="basic",
+            msf_module="auxiliary/scanner/http/http_login",
+        )
+
+        checker._form.detect = AsyncMock(return_value=form_result)
+        checker._msf.detect = AsyncMock(return_value=msf_result)
+
+        item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].auth_type == "basic"
+        assert results[0].msf_module == "auxiliary/scanner/http/http_login"
+
+    @pytest.mark.asyncio
+    async def test_both_fail_returns_no_login(self):
+        """When both detectors find nothing, returns has_login=False."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+
+        checker._form.detect = AsyncMock(return_value=no_login)
+        checker._msf.detect = AsyncMock(return_value=no_login)
+
+        item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].has_login is False
+
+    @pytest.mark.asyncio
+    async def test_form_detector_exception_falls_back_to_msf(self):
+        """FormDetector exception falls back to MSFDetector result."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        msf_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="digest",
+        )
+
+        checker._form.detect = AsyncMock(side_effect=Exception("form exploded"))
+        checker._msf.detect = AsyncMock(return_value=msf_result)
+
+        item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].auth_type == "digest"
 
 
 class TestCVESearcherAuthIntegration:

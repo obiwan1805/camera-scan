@@ -1,16 +1,10 @@
-"""MSF auxiliary scanner + HTTP form heuristic for web auth detection."""
+"""MSF auxiliary scanner for HTTP auth detection (401/Basic/Digest)."""
 import asyncio
-import re
-from typing import Optional
-import aiohttp
 from src.core.config import AuthCheckConfig
 from src.storage.schemas import AuthInfo
 from src.utils.logging import setup_logger
 
 MAX_RAW_RESPONSE = 512
-
-LOGIN_PATHS = ["/", "/login", "/login.html", "/admin", "/cgi-bin/login"]
-PASSWORD_INPUT = re.compile(r'<input[^>]*type=["\']?password', re.IGNORECASE)
 
 
 class MSFDetector:
@@ -20,24 +14,17 @@ class MSFDetector:
         self._logger = setup_logger("MSFDetector")
 
     async def detect(self, ip: str, port: int, protocol: str) -> AuthInfo:
-        scheme = "https" if protocol == "https" else "http"
-
+        if not self._msf_client:
+            return AuthInfo(
+                port=port, protocol=protocol, has_login=False, auth_type="unknown",
+            )
         try:
-            tasks = []
-            if self._msf_client:
-                tasks.append(self._detect_msf_http(ip, port))
-            tasks.append(self._detect_form_login(ip, port, scheme))
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for r in results:
-                if isinstance(r, AuthInfo) and r.has_login:
-                    return r
+            return await self._detect_msf_http(ip, port)
         except Exception as e:
-            self._logger.warning(f"Auth detection failed for {ip}:{port}: {e}")
-
-        return AuthInfo(
-            port=port, protocol=protocol, has_login=False, auth_type="unknown",
-        )
+            self._logger.warning(f"MSF http_login failed for {ip}:{port}: {e}")
+            return AuthInfo(
+                port=port, protocol=protocol, has_login=False, auth_type="unknown",
+            )
 
     async def _detect_msf_http(self, ip: str, port: int) -> AuthInfo:
         console_id = None
@@ -91,43 +78,9 @@ class MSFDetector:
                 raw_response=output[:MAX_RAW_RESPONSE],
                 msf_module="auxiliary/scanner/http/http_login",
             )
-        except Exception as e:
-            self._logger.warning(f"MSF http_login failed for {ip}:{port}: {e}")
-            return AuthInfo(port=port, protocol="http", has_login=False, auth_type="unknown")
         finally:
             if console_id is not None:
                 try:
                     await self._msf_client._call("console.destroy", str(console_id))
                 except Exception:
                     pass
-
-    async def _detect_form_login(self, ip: str, port: int, scheme: str) -> Optional[AuthInfo]:
-        try:
-            timeout = aiohttp.ClientTimeout(total=self._config.banner_timeout)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                for path in LOGIN_PATHS:
-                    url = f"{scheme}://{ip}:{port}{path}"
-                    try:
-                        async with session.get(url, ssl=False, allow_redirects=True) as resp:
-                            if resp.status == 401:
-                                auth_header = resp.headers.get("WWW-Authenticate", "")
-                                auth_type = "basic" if "basic" in auth_header.lower() else (
-                                    "digest" if "digest" in auth_header.lower() else "unknown"
-                                )
-                                return AuthInfo(
-                                    port=port, protocol=scheme, has_login=True,
-                                    auth_type=auth_type,
-                                    raw_response=f"HTTP 401 at {path}"[:MAX_RAW_RESPONSE],
-                                )
-                            html = await resp.text(errors="replace")
-                            if PASSWORD_INPUT.search(html):
-                                return AuthInfo(
-                                    port=port, protocol=scheme, has_login=True,
-                                    auth_type="form",
-                                    raw_response=f"Password input found at {path}"[:MAX_RAW_RESPONSE],
-                                )
-                    except Exception:
-                        continue
-        except Exception as e:
-            self._logger.debug(f"Form detection failed for {ip}:{port}: {e}")
-        return None
