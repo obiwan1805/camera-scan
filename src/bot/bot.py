@@ -13,6 +13,7 @@ from src.pipeline.builder import PipelineBuilder, Pipeline
 from src.layers import PortScanner, CIDRInputSource, Fingerprinter, CVESearcher
 from src.storage.sqlite_backend import SQLiteBackend
 from src.core.durable_queue import DurableQueue
+from src.utils.time import format_hms
 
 from .scan import ScanGroup
 from .config import ConfigGroup
@@ -43,6 +44,9 @@ class ScanBot(commands.Bot):
         self._delete_paused = False
         self._overrides: dict[str, int] = {}
         self._sig_loader = None
+        self._import_total = 0
+        self._running_import = False
+        self._import_status_task: asyncio.Task | None = None
 
         self._command_groups = [
             ScanGroup(self), ConfigGroup(self),
@@ -197,6 +201,11 @@ class ScanBot(commands.Bot):
         """Run standalone fingerprinter pipeline for imported masscan output."""
         import_path = Path(import_file)
         try:
+            # Pre-count valid masscan lines so we can compute end-to-end ETA
+            with open(import_path) as f:
+                self._import_total = sum(1 for line in f if line.startswith("open tcp"))
+            print(f"[Import] {self._import_total:,} entries to process")
+
             config = get_default_config()
             if "max_concurrent" in self._overrides:
                 config.layer2.worker_pool.max_concurrent = self._overrides["max_concurrent"]
@@ -223,7 +232,11 @@ class ScanBot(commands.Bot):
 
             await self.fingerprinter.start()
             self._status = "running"
+            self._running_import = True
             self._stop_signal = False
+            self._import_status_task = asyncio.create_task(
+                self._import_status_reporter(self._import_total)
+            )
 
             # Feed from file using configured batch/interval
             from src.layers import PortScanner
@@ -277,6 +290,14 @@ class ScanBot(commands.Bot):
             print(f"Masscan import error: {e}")
             traceback.print_exc()
         finally:
+            self._running_import = False
+            if self._import_status_task:
+                self._import_status_task.cancel()
+                try:
+                    await self._import_status_task
+                except asyncio.CancelledError:
+                    pass
+                self._import_status_task = None
             if import_path.exists():
                 import_path.unlink()
             if self.fingerprinter:
@@ -291,9 +312,30 @@ class ScanBot(commands.Bot):
             self._status = "idle"
             self._stop_signal = False
             self._delete_paused = False
+            self._import_total = 0
             self.fingerprinter = None
             self.storage = None
             gc.collect()
+
+    async def _import_status_reporter(self, total_to_process: int) -> None:
+        """Periodic log during masscan import — reports end-to-end ETA based on
+        fingerprinter progress against the pre-counted file line total."""
+        while self._running_import and not self._stop_signal:
+            await asyncio.sleep(5)
+            fp = self.fingerprinter
+            if not fp or not fp._start_time:
+                continue
+            elapsed = asyncio.get_running_loop().time() - fp._start_time
+            processed = fp._processed
+            rate = processed / elapsed if elapsed > 0 else 0
+            remaining = max(0, total_to_process - processed)
+            eta = (remaining / rate) if rate > 0 else None
+            queue_size = fp.input_queue.size() if fp.input_queue else 0
+            print(
+                f"[Import Progress] Processed: {processed:,} / {total_to_process:,} | "
+                f"Queue: {queue_size} | Rate: {rate:.1f}/s | "
+                f"Elapsed: {elapsed:.1f}s | ETA: {format_hms(eta)}"
+            )
 
     def _build_progress_embed(self) -> discord.Embed:
         embed = discord.Embed(title="Camera Scan Progress", color=0x5865F2)
@@ -310,6 +352,10 @@ class ScanBot(commands.Bot):
             discovered = self.scanner._discovered
             hit_rate = (discovered / scanned * 100) if scanned > 0 else 0
 
+            scan_rate = scanned / elapsed if elapsed > 0 else 0
+            remaining = max(0, total - scanned) if total > 0 else 0
+            eta_seconds = (remaining / scan_rate) if scan_rate > 0 else None
+
             progress_str = (
                 f"{scanned:,} / {total:,} ({percentage}%)"
                 if total > 0
@@ -319,10 +365,37 @@ class ScanBot(commands.Bot):
                 f"Scanned:    {progress_str}\n"
                 f"Discovered: {discovered:,}\n"
                 f"Hit rate:   {hit_rate:.2f}%\n"
-                f"Elapsed:    {elapsed:.1f}s"
+                f"Elapsed:    {elapsed:.1f}s\n"
+                f"ETA:        {format_hms(eta_seconds)}"
             )
             embed.add_field(
                 name="Layer 1 — Port Scanner", value=f"```\n{layer1}\n```", inline=False
+            )
+        elif self._import_total > 0 and self.fingerprinter:
+            fp = self.fingerprinter
+            elapsed = (
+                asyncio.get_running_loop().time() - fp._start_time
+                if fp._start_time
+                else 0
+            )
+            processed = fp._processed
+            total = self._import_total
+            percentage = (processed / total * 100) if total > 0 else 0
+            rate = processed / elapsed if elapsed > 0 else 0
+            remaining = max(0, total - processed)
+            eta_seconds = (remaining / rate) if rate > 0 else None
+
+            progress_str = f"{processed:,} / {total:,} ({percentage:.1f}%)"
+            layer1 = (
+                f"Import:     {progress_str}\n"
+                f"Rate:       {rate:.1f}/s\n"
+                f"Elapsed:    {elapsed:.1f}s\n"
+                f"ETA:        {format_hms(eta_seconds)}"
+            )
+            embed.add_field(
+                name="Layer 1 — Masscan Import",
+                value=f"```\n{layer1}\n```",
+                inline=False,
             )
 
         if self.fingerprinter:
