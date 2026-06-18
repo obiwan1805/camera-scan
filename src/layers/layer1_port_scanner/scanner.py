@@ -2,6 +2,7 @@
 import asyncio
 import re
 import signal
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional
 from src.core.interfaces import Scanner, InputSource
@@ -103,10 +104,12 @@ class PortScanner(Scanner):
         paused_conf.write_text("\n".join(fixed) + "\n")
 
     async def _run_scanner(self, input_source: InputSource) -> None:
-        output_path = Path(self.config.output_file)
+        base = Path(self.config.output_file)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = base.parent / f"{base.stem}_{timestamp}{base.suffix}"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if output_path.exists():
-            output_path.unlink()
+        self._output_path = output_path
+        self.logger.info(f"Masscan output file: {output_path}")
 
         paused_conf = Path("paused.conf")
         resuming = paused_conf.exists()
