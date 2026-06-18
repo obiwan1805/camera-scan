@@ -50,6 +50,7 @@ class SQLiteBackend(StorageBackend):
                 fingerprint TEXT,
                 weight REAL,
                 protocol TEXT,
+                auth_info TEXT,
                 PRIMARY KEY (ip, port)
             );
             CREATE TABLE IF NOT EXISTS claims (
@@ -103,6 +104,7 @@ class SQLiteBackend(StorageBackend):
         """)
         await self._migrate_targets_table()
         await self._migrate_fingerprints_protocol()
+        await self._migrate_fingerprints_auth_info()
 
     async def _migrate_targets_table(self) -> None:
         """Migrate old IoT-device targets table to new scan-target schema."""
@@ -130,6 +132,15 @@ class SQLiteBackend(StorageBackend):
         col_names = [col[1] for col in columns]
         if "protocol" not in col_names:
             await self._conn.execute("ALTER TABLE fingerprints ADD COLUMN protocol TEXT")
+            await self._conn.commit()
+
+    async def _migrate_fingerprints_auth_info(self) -> None:
+        """Add auth_info column to fingerprints table for existing DBs."""
+        cursor = await self._conn.execute("PRAGMA table_info(fingerprints)")
+        columns = await cursor.fetchall()
+        col_names = [col[1] for col in columns]
+        if "auth_info" not in col_names:
+            await self._conn.execute("ALTER TABLE fingerprints ADD COLUMN auth_info TEXT")
             await self._conn.commit()
 
     async def disconnect(self) -> None:
