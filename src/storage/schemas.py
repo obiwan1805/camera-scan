@@ -66,6 +66,7 @@ class CameraFingerprint(BaseModel):
     status: str = "fingerprint_done"
     fingerprint: Fingerprint
     weight: float = 0.0
+    protocol: Optional[str] = None
 
 
 class RawResponse(BaseModel):

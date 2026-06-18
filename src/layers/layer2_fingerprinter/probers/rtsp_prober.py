@@ -12,6 +12,8 @@ _DEFAULT_RTSP_PATHS = ["/stream1", "/live", "/h264", "/"]
 class RTSPProber(Prober):
     """Collects RTSP banner data from DESCRIBE and OPTIONS requests."""
 
+    protocol = "rtsp"
+
     def __init__(self, extra_paths: Optional[List[str]] = None, timeout: int = 10):
         self._timeout = timeout
         self._paths = list(_DEFAULT_RTSP_PATHS)

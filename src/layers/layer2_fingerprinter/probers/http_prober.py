@@ -11,6 +11,8 @@ from src.utils.logging import setup_logger
 class HTTPProber(Prober):
     """Collects data via HTTP: main page, headers, and all signature endpoint probes."""
 
+    protocol = "http"
+
     def __init__(self, endpoint_paths: Optional[set[str]] = None, timeout: int = 10):
         self._endpoint_paths = endpoint_paths or set()
         self._timeout = timeout

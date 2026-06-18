@@ -25,6 +25,8 @@ _SOAP_REQUEST = '''<?xml version="1.0" encoding="utf-8"?>
 class ONVIFProber(Prober):
     """Collects ONVIF SOAP GetDeviceInformation responses."""
 
+    protocol = "onvif"
+
     def __init__(self, timeout: int = 10):
         self._timeout = timeout
         self._logger = setup_logger("ONVIFProber")

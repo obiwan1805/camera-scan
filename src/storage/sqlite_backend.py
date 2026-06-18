@@ -47,6 +47,7 @@ class SQLiteBackend(StorageBackend):
                 status TEXT,
                 fingerprint TEXT,
                 weight REAL,
+                protocol TEXT,
                 PRIMARY KEY (ip, port)
             );
             CREATE TABLE IF NOT EXISTS claims (
@@ -99,6 +100,7 @@ class SQLiteBackend(StorageBackend):
             );
         """)
         await self._migrate_targets_table()
+        await self._migrate_fingerprints_protocol()
 
     async def _migrate_targets_table(self) -> None:
         """Migrate old IoT-device targets table to new scan-target schema."""
@@ -117,6 +119,15 @@ class SQLiteBackend(StorageBackend):
                     created_at TEXT DEFAULT (datetime('now'))
                 )
             """)
+            await self._conn.commit()
+
+    async def _migrate_fingerprints_protocol(self) -> None:
+        """Add protocol column to fingerprints table for existing DBs."""
+        cursor = await self._conn.execute("PRAGMA table_info(fingerprints)")
+        columns = await cursor.fetchall()
+        col_names = [col[1] for col in columns]
+        if "protocol" not in col_names:
+            await self._conn.execute("ALTER TABLE fingerprints ADD COLUMN protocol TEXT")
             await self._conn.commit()
 
     async def disconnect(self) -> None:
@@ -226,13 +237,14 @@ class SQLiteBackend(StorageBackend):
                 item.timestamp.isoformat(),
                 item.status,
                 str(item.fingerprint.model_dump_json()),
-                item.weight
+                item.weight,
+                item.protocol,
             )
             for item in items if isinstance(item, CameraFingerprint)
         ]
         if rows:
             await self._conn.executemany(
-                "INSERT OR REPLACE INTO fingerprints VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO fingerprints VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rows
             )
 
@@ -281,7 +293,8 @@ class SQLiteBackend(StorageBackend):
                     timestamp=datetime.fromisoformat(row[2]),
                     status=row[3],
                     fingerprint=fp_dict,
-                    weight=row[5]
+                    weight=row[5],
+                    protocol=row[6] if len(row) > 6 else None,
                 ))
             return results
         elif collection == "port_scans":
