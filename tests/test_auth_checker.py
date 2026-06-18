@@ -716,3 +716,25 @@ class TestAuthCheckerIntegration:
         assert result is not None
         assert result.fingerprint.cves == []
         assert result.auth_info == []
+
+
+class TestCLIAuthDisplay:
+    def test_auth_info_with_form_details_serializes(self):
+        """AuthInfo with form details serializes to JSON for DB storage."""
+        from src.storage.schemas import AuthInfo
+        import json
+
+        info = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="form",
+            form_action="/api/login", form_method="POST",
+            username_field="user", password_field="pass",
+            hidden_fields={"csrf": "tok"}, csrf_token_field="csrf",
+            csrf_token_value="tok", login_url="http://1.1.1.1/login",
+            cookies={"sid": "abc"},
+        )
+        data = json.loads(info.model_dump_json())
+        assert data["form_action"] == "/api/login"
+        assert data["username_field"] == "user"
+        assert data["password_field"] == "pass"
+        assert data["csrf_token_field"] == "csrf"
+        assert data["login_url"] == "http://1.1.1.1/login"

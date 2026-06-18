@@ -504,6 +504,11 @@ async def cmd_run_layer3(args):
         print(f"msfrpcd: Failed ({e}) — MSF check will be skipped")
         cve_searcher._msf_client = None
 
+    if cve_searcher._auth_checker and cve_searcher._msf_client:
+        cve_searcher._auth_checker._msf._msf_client = cve_searcher._msf_client
+
+    auth_enabled = cve_searcher._auth_checker is not None
+    print(f"Auth detection: {'enabled' if auth_enabled else 'disabled'}")
     print()
 
     # Process all items with concurrency
@@ -511,15 +516,21 @@ async def cmd_run_layer3(args):
     results = []
     processed = 0
     cve_found = 0
+    auth_checked = 0
+    auth_found = 0
     failed = 0
 
     async def process_one(item):
-        nonlocal processed, cve_found, failed
+        nonlocal processed, cve_found, auth_checked, auth_found, failed
         async with semaphore:
             try:
                 enriched = await cve_searcher.process(item)
                 if enriched and enriched.fingerprint.cves:
                     cve_found += 1
+                if enriched and enriched.auth_info:
+                    auth_checked += 1
+                    if any(a.has_login for a in enriched.auth_info):
+                        auth_found += 1
                 results.append(enriched or item)
             except Exception as e:
                 logger.error(f"Error {item.ip}:{item.port}: {e}")
@@ -528,19 +539,26 @@ async def cmd_run_layer3(args):
             finally:
                 processed += 1
                 if processed % 50 == 0 or processed == total:
-                    print(f"  [{processed}/{total}] CVE found: {cve_found} | Failed: {failed}")
+                    parts = [f"[{processed}/{total}]", f"CVE: {cve_found}"]
+                    if auth_enabled:
+                        parts.append(f"Auth: {auth_found}/{auth_checked}")
+                    parts.append(f"Failed: {failed}")
+                    print(f"  {' | '.join(parts)}")
 
     tasks = [asyncio.create_task(process_one(item)) for item in items]
     await asyncio.gather(*tasks)
 
-    # Save enriched fingerprints back to DB
+    # Save enriched fingerprints back to DB (CVEs + auth_info)
     saved = 0
     for item in results:
-        if item.fingerprint.cves:
+        has_changes = item.fingerprint.cves or item.auth_info
+        if has_changes:
             try:
+                fp_json = item.fingerprint.model_dump_json()
+                auth_json = json.dumps([a.model_dump() for a in item.auth_info]) if item.auth_info else "[]"
                 await storage._conn.execute(
-                    "UPDATE fingerprints SET fingerprint=? WHERE ip=? AND port=?",
-                    (item.fingerprint.model_dump_json(), item.ip, item.port)
+                    "UPDATE fingerprints SET fingerprint=?, auth_info=? WHERE ip=? AND port=?",
+                    (fp_json, auth_json, item.ip, item.port)
                 )
                 saved += 1
             except Exception as e:
@@ -549,9 +567,13 @@ async def cmd_run_layer3(args):
 
     # Summary
     print(f"\n{HEADER_BAR}")
-    print(f"Done! Processed: {processed} | CVE found: {cve_found} | Failed: {failed} | Saved: {saved}")
+    summary_parts = [f"Processed: {processed}", f"CVE found: {cve_found}"]
+    if auth_enabled:
+        summary_parts.extend([f"Auth checked: {auth_checked}", f"Auth found: {auth_found}"])
+    summary_parts.extend([f"Failed: {failed}", f"Saved: {saved}"])
+    print(f"Done! {' | '.join(summary_parts)}")
 
-    # Show top results
+    # Show CVE results
     cve_items = [i for i in results if i.fingerprint.cves]
     if cve_items:
         print(f"\nTargets with CVEs ({len(cve_items)}):\n")
@@ -565,6 +587,24 @@ async def cmd_run_layer3(args):
                 cves_str += f" +{len(fp.cves)-3}"
             rows_out.append([item.ip, str(item.port), fp.vendor or "—", fp.model or "—", cves_str])
         _print_table(headers, rows_out, widths)
+
+    # Show auth results
+    if auth_enabled:
+        auth_items = [i for i in results if i.auth_info and any(a.has_login for a in i.auth_info)]
+        if auth_items:
+            print(f"Targets with login detected ({len(auth_items)}):\n")
+            headers = ["IP", "Port", "Protocol", "Auth Type", "Login URL", "Form Action"]
+            widths = [18, 6, 10, 14, 30, 20]
+            rows_out = []
+            for item in auth_items[:30]:
+                for a in item.auth_info:
+                    if a.has_login:
+                        rows_out.append([
+                            item.ip, str(a.port), a.protocol, a.auth_type,
+                            a.login_url or "—",
+                            a.form_action or "—",
+                        ])
+            _print_table(headers, rows_out, widths)
 
     # Cleanup
     if cve_searcher._nvd_client:
