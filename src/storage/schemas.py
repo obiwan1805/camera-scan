@@ -54,6 +54,15 @@ class AuthInfo(BaseModel):
     auth_type: str
     raw_response: str = ""
     msf_module: Optional[str] = None
+    form_action: Optional[str] = None
+    form_method: Optional[str] = None
+    username_field: Optional[str] = None
+    password_field: Optional[str] = None
+    hidden_fields: Optional[dict] = None
+    csrf_token_field: Optional[str] = None
+    csrf_token_value: Optional[str] = None
+    login_url: Optional[str] = None
+    cookies: Optional[dict] = None
 
 
 class CVEEntry(BaseModel):

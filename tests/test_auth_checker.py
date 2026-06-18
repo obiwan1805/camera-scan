@@ -33,6 +33,27 @@ class TestAuthInfo:
         assert "401" in info.raw_response
         assert info.msf_module == "auxiliary/scanner/http/http_login"
 
+    def test_auth_info_form_details(self):
+        from src.storage.schemas import AuthInfo
+        info = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="form",
+            form_action="/api/login", form_method="POST",
+            username_field="user", password_field="pass",
+            hidden_fields={"csrf": "abc123"},
+            csrf_token_field="csrf", csrf_token_value="abc123",
+            login_url="http://1.1.1.1/login.html",
+            cookies={"session": "xyz"},
+        )
+        assert info.form_action == "/api/login"
+        assert info.form_method == "POST"
+        assert info.username_field == "user"
+        assert info.password_field == "pass"
+        assert info.hidden_fields == {"csrf": "abc123"}
+        assert info.csrf_token_field == "csrf"
+        assert info.csrf_token_value == "abc123"
+        assert info.login_url == "http://1.1.1.1/login.html"
+        assert info.cookies == {"session": "xyz"}
+
     def test_camera_fingerprint_has_auth_info(self):
         from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
         item = CameraFingerprint(
