@@ -19,6 +19,7 @@ class CollectedData(BaseModel):
     ssl_subject: Optional[str] = None
 
     raw_responses: List[RawResponse] = []
+    protocols: List[str] = []
 
     class Config:
         arbitrary_types_allowed = True

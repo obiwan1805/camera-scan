@@ -142,9 +142,9 @@ class Fingerprinter(Filter):
     async def process(self, item: tuple[str, int]) -> Optional[CameraFingerprint]:
         try:
             ip, port = item
-            fp, raw_responses = await self._fingerprint(ip, port)
+            fp, raw_responses, protocols = await self._fingerprint(ip, port)
 
-            if raw_responses:
+            if raw_responses and getattr(self.config, 'log_raw_responses', False):
                 await self.storage.submit("raw_responses", raw_responses)
 
             if fp:
@@ -153,7 +153,8 @@ class Fingerprinter(Filter):
                     ip=ip,
                     port=port,
                     fingerprint=fp,
-                    weight=weight
+                    weight=weight,
+                    protocol="+".join(sorted(set(protocols))) or None,
                 )
                 await self.storage.submit("fingerprints", [result])
                 return result
@@ -163,7 +164,7 @@ class Fingerprinter(Filter):
             self.logger.error(f"Error processing {item[0]}:{item[1]}: {e}\n{traceback.format_exc()}")
             return None
 
-    async def _fingerprint(self, ip: str, port: int) -> tuple[Optional[Fingerprint], list[RawResponse]]:
+    async def _fingerprint(self, ip: str, port: int) -> tuple[Optional[Fingerprint], list[RawResponse], list[str]]:
         """Three-phase pipeline: collect -> match -> resolve."""
         # Phase 1: Collect raw data via all applicable probers concurrently
         collected = await self._collect(ip, port)
@@ -174,7 +175,7 @@ class Fingerprinter(Filter):
         # Phase 3: Aggregate matches into best fingerprint
         fp = self._resolver.resolve(matches)
 
-        return fp, collected.raw_responses
+        return fp, collected.raw_responses, collected.protocols
 
     async def _collect(self, ip: str, port: int) -> CollectedData:
         """Run all applicable probers concurrently and merge results."""
@@ -191,7 +192,7 @@ class Fingerprinter(Filter):
         results = await asyncio.gather(*[_run_prober(p) for p in applicable])
 
         collected = CollectedData(ip=ip, port=port)
-        for partial in results:
+        for prober, partial in zip(applicable, results):
             if partial is None:
                 continue
             if partial.html and not collected.html:
@@ -208,6 +209,18 @@ class Fingerprinter(Filter):
             if partial.ssl_subject and not collected.ssl_subject:
                 collected.ssl_subject = partial.ssl_subject
             collected.raw_responses.extend(partial.raw_responses)
+
+            if prober.protocol and (
+                partial.html
+                or partial.headers
+                or partial.xml_texts
+                or partial.json_texts
+                or partial.rtsp_banner
+                or partial.onvif_response
+                or partial.favicon_hash is not None
+                or partial.ssl_subject
+            ):
+                collected.protocols.append(prober.protocol)
 
         return collected
 

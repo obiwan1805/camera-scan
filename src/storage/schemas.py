@@ -86,6 +86,7 @@ class CameraFingerprint(BaseModel):
     fingerprint: Fingerprint
     weight: float = 0.0
     auth_info: List["AuthInfo"] = []
+    protocol: Optional[str] = None
 
 
 class RawResponse(BaseModel):

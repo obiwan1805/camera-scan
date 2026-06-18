@@ -11,6 +11,8 @@ from src.storage.schemas import RawResponse
 class HTTPSProber(Prober):
     """Collects data via HTTPS with SSL cert extraction."""
 
+    protocol = "https"
+
     def __init__(self, endpoint_paths: Optional[set[str]] = None, timeout: int = 10):
         self._endpoint_paths = endpoint_paths or set()
         self._timeout = timeout

@@ -2,6 +2,7 @@
 import asyncio
 import re
 import signal
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional
 from src.core.interfaces import Scanner, InputSource
@@ -11,6 +12,7 @@ from src.storage.base import StorageBackend
 from src.storage.schemas import PortScanResult
 from src.utils.logging import setup_logger
 from src.utils.network import count_total_ips, count_ips_in_range
+from src.utils.time import format_hms
 
 
 class CIDRInputSource(InputSource):
@@ -103,10 +105,12 @@ class PortScanner(Scanner):
         paused_conf.write_text("\n".join(fixed) + "\n")
 
     async def _run_scanner(self, input_source: InputSource) -> None:
-        output_path = Path(self.config.output_file)
+        base = Path(self.config.output_file)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = base.parent / f"{base.stem}_{timestamp}{base.suffix}"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if output_path.exists():
-            output_path.unlink()
+        self._output_path = output_path
+        self.logger.info(f"Masscan output file: {output_path}")
 
         paused_conf = Path("paused.conf")
         resuming = paused_conf.exists()
@@ -309,6 +313,10 @@ class PortScanner(Scanner):
             percentage = self._scan_percentage
             scanned = self._scanned_ips
 
+            scan_rate = scanned / elapsed if elapsed > 0 else 0
+            remaining = max(0, self._total_ips - scanned) if self._total_ips > 0 else 0
+            eta = (remaining / scan_rate) if scan_rate > 0 else None
+
             progress = f"{scanned:,}" if self._total_ips == 0 else f"{scanned:,} / {self._total_ips:,}"
             hit_rate = (self._discovered / scanned * 100) if scanned > 0 else 0
             self.logger.info(
@@ -317,7 +325,8 @@ class PortScanner(Scanner):
                 f"Hit rate: {hit_rate:.2f}% | "
                 f"Queue: {queue_size} | "
                 f"Rate: {rate:.1f}/s | "
-                f"Elapsed: {elapsed:.1f}s"
+                f"Elapsed: {elapsed:.1f}s | "
+                f"ETA: {format_hms(eta)}"
             )
 
     async def scan(self, input_source: InputSource) -> AsyncIterator[tuple[str, int]]:
