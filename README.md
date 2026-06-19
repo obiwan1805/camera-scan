@@ -83,6 +83,19 @@ sudo -E python3 bot.py
 
 `sudo` is required because masscan needs raw socket access.
 
+### Target management from the shell (no Discord)
+
+For prep work — bulk-loading CIDR lists, staging masscan output — use the CLI:
+
+```bash
+python3 main.py add 192.168.1.0/24
+python3 main.py import my_targets.txt
+python3 main.py import-masscan masscan_results.txt
+python3 main.py list
+```
+
+See **[docs/CLI.md](docs/CLI.md)** for the full reference. The CLI writes to the same DB as the bot, so anything staged from the shell is picked up by the next `/scan start`.
+
 ## Basic Workflow
 
 ```
@@ -103,6 +116,7 @@ For importing existing masscan output instead of running masscan live:
 ## Documentation
 
 - **[docs/USAGE.md](docs/USAGE.md)** — Full Discord command reference, workflows, and feature guides
+- **[docs/CLI.md](docs/CLI.md)** — `main.py` shell CLI for target management (no Discord required)
 - **[docs/SIGNATURES.md](docs/SIGNATURES.md)** — How to write and manage fingerprint signatures (the most important feature for customization)
 
 ## Notes
