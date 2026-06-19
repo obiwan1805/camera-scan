@@ -21,9 +21,18 @@ class ClearTargetsView(discord.ui.View):
     async def _execute_clear(self, interaction: discord.Interaction, export: bool):
         await interaction.response.defer()
 
+        # Re-check idle at button-click time — user may have started a scan
+        # in another channel between showing this view and clicking.
+        if self.bot._status != "idle":
+            await interaction.followup.send(
+                content="Scan is no longer idle. Stop the scan first, then re-run `/target clear`."
+            )
+            return
+
         storage = self.bot.db
         files: list[discord.File] = []
         export_summary = ""
+        errors: list[str] = []
 
         if export:
             try:
@@ -38,32 +47,50 @@ class ClearTargetsView(discord.ui.View):
                 await interaction.followup.send(f"Export failed: {e}")
                 return
 
-        target_rows = await storage.generic_list("targets")
-        for r in target_rows:
-            await storage.generic_delete("targets", r["id"])
+        try:
+            target_rows = await storage.generic_list("targets")
+            for r in target_rows:
+                await storage.generic_delete("targets", r["id"])
+        except Exception as e:
+            errors.append(f"targets: {e}")
 
-        results_counts = await storage.clear_results()
+        try:
+            results_counts = await storage.clear_results()
+        except Exception as e:
+            errors.append(f"results: {e}")
+            results_counts = {}
 
-        paused = Path("paused.conf")
-        if paused.exists():
-            paused.unlink()
+        try:
+            paused = Path("paused.conf")
+            if paused.exists():
+                paused.unlink()
+        except Exception as e:
+            errors.append(f"paused.conf: {e}")
 
-        scans_dir = Path("data/scans")
         deleted_files = 0
-        if scans_dir.exists():
-            for f in scans_dir.glob("results_*.txt"):
-                try:
-                    f.unlink()
-                    deleted_files += 1
-                except Exception:
-                    pass
+        try:
+            scans_dir = Path("data/scans")
+            if scans_dir.exists():
+                for f in scans_dir.glob("results_*.txt"):
+                    try:
+                        f.unlink()
+                        deleted_files += 1
+                    except Exception:
+                        pass
+        except Exception as e:
+            errors.append(f"scan files: {e}")
 
-        total_results = sum(results_counts.values())
+        total_results = sum(results_counts.values()) if results_counts else 0
         msg = (
-            f"Cleared **{len(target_rows)}** targets, **{total_results}** result rows, "
-            f"**{deleted_files}** masscan files.{export_summary}"
+            f"Cleared **{len(target_rows) if 'target_rows' in locals() else 0}** targets, "
+            f"**{total_results}** result rows, **{deleted_files}** masscan files.{export_summary}"
         )
-        await interaction.followup.send(content=msg, files=files or None)
+        if errors:
+            msg += f"\n⚠️ Partial failures: {' | '.join(errors)}"
+        try:
+            await interaction.followup.send(content=msg, files=files or None)
+        except Exception as e:
+            print(f"[ClearTargetsView] followup failed: {e}")
 
     @discord.ui.button(label="Export then delete", style=discord.ButtonStyle.success, row=0)
     async def export_then_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -79,6 +106,110 @@ class ClearTargetsView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         await interaction.response.edit_message(content="Cancelled.", embed=None, view=None)
+
+    async def on_timeout(self):
+        # Disable buttons so the user can see the view has expired
+        for child in self.children:
+            child.disabled = True
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        print(f"[ClearTargetsView error] {type(error).__name__}: {error}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"Operation failed: {error}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"Operation failed: {error}", ephemeral=True)
+        except Exception:
+            pass
+
+
+class RemoveTargetView(discord.ui.View):
+    """Three-button view for /target remove: cascade delete, target only, or cancel."""
+
+    def __init__(self, bot: 'ScanBot', target_id: int, target_spec: str,
+                 target_type: str, ip_count: int, impact: dict[str, int],
+                 timeout: int = 60):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.target_id = target_id
+        self.target_spec = target_spec
+        self.target_type = target_type
+        self.ip_count = ip_count
+        self.impact = impact
+
+    async def _execute_remove(self, interaction: discord.Interaction, cascade: bool):
+        await interaction.response.defer()
+
+        if self.bot._status != "idle":
+            await interaction.followup.send(
+                content="Scan is no longer idle. Stop the scan first, then re-run `/target remove`."
+            )
+            return
+
+        storage = self.bot.db
+        errors: list[str] = []
+        cascade_summary = ""
+
+        try:
+            deleted_target = await storage.generic_delete("targets", self.target_id)
+        except Exception as e:
+            errors.append(f"target: {e}")
+            deleted_target = False
+
+        if not deleted_target and not errors:
+            await interaction.followup.send(content=f"Target id={self.target_id} not found.")
+            return
+
+        if cascade:
+            try:
+                counts = await storage.clear_target_results(self.target_spec)
+                total = sum(counts.values())
+                cascade_summary = (
+                    f" Also deleted **{total}** result rows "
+                    f"({counts.get('port_scans', 0)} port scans, "
+                    f"{counts.get('fingerprints', 0)} fingerprints, "
+                    f"{counts.get('raw_responses', 0)} raw responses, "
+                    f"{counts.get('claims', 0)} claims)."
+                )
+            except Exception as e:
+                errors.append(f"cascade: {e}")
+
+        msg = f"Target id={self.target_id} (**{self.target_spec}**) removed.{cascade_summary}"
+        if errors:
+            msg += f"\n⚠️ Partial failures: {' | '.join(errors)}"
+        try:
+            await interaction.followup.send(content=msg)
+        except Exception as e:
+            print(f"[RemoveTargetView] followup failed: {e}")
+
+    @discord.ui.button(label="Remove all (cascade)", style=discord.ButtonStyle.danger, row=0)
+    async def remove_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await self._execute_remove(interaction, cascade=True)
+
+    @discord.ui.button(label="Target only", style=discord.ButtonStyle.secondary, row=0)
+    async def target_only(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await self._execute_remove(interaction, cascade=False)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="Cancelled.", embed=None, view=None)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        print(f"[RemoveTargetView error] {type(error).__name__}: {error}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"Operation failed: {error}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"Operation failed: {error}", ephemeral=True)
+        except Exception:
+            pass
 
 
 class TargetGroup(app_commands.Group):
@@ -232,11 +363,61 @@ class TargetGroup(app_commands.Group):
             return
 
         storage = self.bot.db
-        deleted = await storage.generic_delete("targets", id)
-        if deleted:
-            await safe_send(interaction, content=f"Target id={id} removed.")
-        else:
+
+        # Look up the target row to compute impact
+        target_row = None
+        try:
+            rows = await storage.generic_list("targets")
+            for r in rows:
+                if r["id"] == id:
+                    target_row = r
+                    break
+        except Exception as e:
+            await safe_send(interaction, content=f"Failed to look up target: {e}")
+            return
+
+        if not target_row:
             await safe_send(interaction, content=f"Target id={id} not found.")
+            return
+
+        target_spec = target_row["target"]
+        target_type = target_row["type"]
+        if target_type == "range":
+            ip_count = count_ips_in_range(target_spec)
+        else:
+            ip_count = count_ips_in_cidr(target_spec)
+
+        # Pre-count related result rows for the confirmation embed
+        try:
+            impact = await storage.count_target_results(target_spec)
+        except Exception as e:
+            await safe_send(interaction, content=f"Failed to count related results: {e}")
+            return
+
+        total_results = sum(impact.values())
+        embed = discord.Embed(
+            title=f"Remove target id={id}?",
+            description=(
+                f"**{target_spec}** ({target_type}, {ip_count:,} IPs)\n\n"
+                f"Related rows that would also be deleted on cascade:\n"
+                f"- port_scans: **{impact.get('port_scans', 0):,}**\n"
+                f"- fingerprints: **{impact.get('fingerprints', 0):,}**\n"
+                f"- raw_responses: **{impact.get('raw_responses', 0):,}**\n"
+                f"- claims: **{impact.get('claims', 0):,}**\n\n"
+                f"**Remove all** — delete target + the {total_results:,} rows above.\n"
+                f"**Target only** — delete target, keep result rows."
+            ),
+            color=0xED4245,
+        )
+        view = RemoveTargetView(
+            bot=self.bot,
+            target_id=id,
+            target_spec=target_spec,
+            target_type=target_type,
+            ip_count=ip_count,
+            impact=impact,
+        )
+        await safe_send(interaction, embed=embed, view=view)
 
     @app_commands.command(name="list", description="List all scan targets")
     @app_commands.describe(type="Filter by type: cidr, ip, range")
@@ -287,39 +468,46 @@ class TargetGroup(app_commands.Group):
             await safe_send(interaction, content="Scan is running. Pause or stop first.")
             return
 
+        # Defer before slow file I/O + per-line DB inserts
+        await interaction.response.defer()
+
         try:
             raw = await file.read()
             text = raw.decode("utf-8-sig")
         except Exception as e:
-            await safe_send(interaction, content=f"Failed to read file: {e}")
+            await interaction.followup.send(content=f"Failed to read file: {e}")
             return
 
         storage = self.bot.db
         added = 0
         errors = 0
         total_ips = 0
-        for line in text.strip().split("\n"):
-            entry = line.strip()
-            if not entry or entry.startswith("#"):
-                continue
-            target_type = classify_target(entry)
-            try:
-                await storage.generic_insert("targets", {
-                    "target": entry,
-                    "type": target_type,
-                })
-                added += 1
-                if target_type == "range":
-                    total_ips += count_ips_in_range(entry)
-                else:
-                    total_ips += count_ips_in_cidr(entry)
-            except Exception:
-                errors += 1
+        try:
+            for line in text.strip().split("\n"):
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                target_type = classify_target(entry)
+                try:
+                    await storage.generic_insert("targets", {
+                        "target": entry,
+                        "type": target_type,
+                    })
+                    added += 1
+                    if target_type == "range":
+                        total_ips += count_ips_in_range(entry)
+                    else:
+                        total_ips += count_ips_in_cidr(entry)
+                except Exception:
+                    errors += 1
+        except Exception as e:
+            await interaction.followup.send(content=f"Import aborted: {e}")
+            return
 
         msg = f"Imported **{added}** targets ({total_ips:,} IPs)"
         if errors:
             msg += f" ({errors} duplicates/errors skipped)"
-        await safe_send(interaction, content=msg)
+        await interaction.followup.send(content=msg)
 
     @app_commands.command(name="clear", description="Remove ALL targets, scan results, and masscan files")
     async def target_clear(self, interaction: discord.Interaction):
@@ -371,32 +559,37 @@ class TargetGroup(app_commands.Group):
             await safe_send(interaction, content="Scan is running. Stop first.")
             return
 
+        # Defer before slow file read + parse
+        await interaction.response.defer()
+
         try:
             raw = await file.read()
         except Exception as e:
-            await safe_send(interaction, content=f"Failed to read file: {e}")
+            await interaction.followup.send(content=f"Failed to read file: {e}")
             return
 
-        # Save raw masscan output — /scan start will feed it like live masscan
-        Path("data").mkdir(exist_ok=True)
-        Path("data/masscan_import.txt").write_bytes(raw)
+        try:
+            # Save raw masscan output — /scan start will feed it like live masscan
+            Path("data").mkdir(exist_ok=True)
+            Path("data/masscan_import.txt").write_bytes(raw)
 
-        # Quick count for summary
-        text = raw.decode("utf-8-sig", errors="ignore")
-        hosts = set()
-        count = 0
-        for line in text.splitlines():
-            result = PortScanner.parse_masscan_line(line)
-            if result:
-                hosts.add(result[0])
-                count += 1
+            # Quick count for summary
+            text = raw.decode("utf-8-sig", errors="ignore")
+            hosts = set()
+            count = 0
+            for line in text.splitlines():
+                result = PortScanner.parse_masscan_line(line)
+                if result:
+                    hosts.add(result[0])
+                    count += 1
 
-        if count == 0:
-            Path("data/masscan_import.txt").unlink()
-            await safe_send(interaction, content="No valid entries found in file.")
-            return
-        await safe_send(
-            interaction,
-            content=f"Imported **{len(hosts):,}** hosts, **{count:,}** entries.\n"
-                    f"Use `/scan start` to begin fingerprinting.",
-        )
+            if count == 0:
+                Path("data/masscan_import.txt").unlink()
+                await interaction.followup.send(content="No valid entries found in file.")
+                return
+            await interaction.followup.send(
+                content=f"Imported **{len(hosts):,}** hosts, **{count:,}** entries.\n"
+                        f"Use `/scan start` to begin fingerprinting.",
+            )
+        except Exception as e:
+            await interaction.followup.send(content=f"Import failed: {e}")
