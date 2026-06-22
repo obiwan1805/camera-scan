@@ -156,7 +156,7 @@ class VendorProbeDetector:
         except (json.JSONDecodeError, ValueError):
             pass
 
-        if "<result>" in body.lower():
+        if re.search(r"<(?:result|CGI_Result)\b[^>]*>[^<]*</(?:result|CGI_Result)>", body, re.IGNORECASE):
             return AuthInfo(
                 port=port,
                 protocol=protocol,
