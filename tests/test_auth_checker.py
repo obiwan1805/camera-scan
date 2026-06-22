@@ -54,6 +54,22 @@ class TestAuthInfo:
         assert info.login_url == "http://1.1.1.1/login.html"
         assert info.cookies == {"session": "xyz"}
 
+    def test_auth_info_vendor_probe_fields(self):
+        from src.storage.schemas import AuthInfo
+        info = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="digest",
+            confidence="high", detection_method="vendor_probe",
+            login_url="http://1.1.1.1/cgi-bin/login.cgi",
+        )
+        assert info.confidence == "high"
+        assert info.detection_method == "vendor_probe"
+
+    def test_auth_info_new_fields_default_none(self):
+        from src.storage.schemas import AuthInfo
+        info = AuthInfo(port=22, protocol="ssh", has_login=True, auth_type="password")
+        assert info.confidence is None
+        assert info.detection_method is None
+
     def test_camera_fingerprint_has_auth_info(self):
         from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
         item = CameraFingerprint(

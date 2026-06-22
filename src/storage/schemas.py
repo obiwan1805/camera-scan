@@ -63,6 +63,8 @@ class AuthInfo(BaseModel):
     csrf_token_value: Optional[str] = None
     login_url: Optional[str] = None
     cookies: Optional[dict] = None
+    confidence: Optional[str] = None
+    detection_method: Optional[str] = None
 
 
 class CVEEntry(BaseModel):
