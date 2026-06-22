@@ -387,17 +387,17 @@ class TestAuthChecker:
 
     @pytest.mark.asyncio
     async def test_check_http_port_uses_form_detector(self, checker):
-        """HTTP port routes to FormDetector + MSFDetector in parallel."""
+        """HTTP port routes to FormDetector + MSFDetector + VendorProbeDetector in parallel."""
         from src.storage.schemas import AuthInfo
 
         form_result = AuthInfo(
             port=80, protocol="http", has_login=True, auth_type="form",
             form_action="/login", password_field="pass",
         )
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
         checker._form.detect = AsyncMock(return_value=form_result)
-        checker._msf.detect = AsyncMock(return_value=AuthInfo(
-            port=80, protocol="http", has_login=False, auth_type="unknown",
-        ))
+        checker._msf.detect = AsyncMock(return_value=no_login)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
 
         from src.storage.schemas import CameraFingerprint, Fingerprint
         item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
@@ -439,9 +439,11 @@ class TestAuthCheckerMerge:
         msf_result = AuthInfo(
             port=80, protocol="http", has_login=True, auth_type="basic",
         )
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
 
         checker._form.detect = AsyncMock(return_value=form_result)
         checker._msf.detect = AsyncMock(return_value=msf_result)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
 
         item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
         results = await checker.check(item)
@@ -459,7 +461,7 @@ class TestAuthCheckerMerge:
 
         checker = AuthChecker(AuthCheckConfig(), msf_client=None)
 
-        form_result = AuthInfo(
+        no_login = AuthInfo(
             port=80, protocol="http", has_login=False, auth_type="unknown",
         )
         msf_result = AuthInfo(
@@ -467,8 +469,9 @@ class TestAuthCheckerMerge:
             msf_module="auxiliary/scanner/http/http_login",
         )
 
-        checker._form.detect = AsyncMock(return_value=form_result)
+        checker._form.detect = AsyncMock(return_value=no_login)
         checker._msf.detect = AsyncMock(return_value=msf_result)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
 
         item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
         results = await checker.check(item)
@@ -479,7 +482,7 @@ class TestAuthCheckerMerge:
 
     @pytest.mark.asyncio
     async def test_both_fail_returns_no_login(self):
-        """When both detectors find nothing, returns has_login=False."""
+        """When all detectors find nothing, returns has_login=False."""
         from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
         from src.core.config import AuthCheckConfig
         from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
@@ -490,6 +493,7 @@ class TestAuthCheckerMerge:
 
         checker._form.detect = AsyncMock(return_value=no_login)
         checker._msf.detect = AsyncMock(return_value=no_login)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
 
         item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
         results = await checker.check(item)
@@ -509,15 +513,249 @@ class TestAuthCheckerMerge:
         msf_result = AuthInfo(
             port=80, protocol="http", has_login=True, auth_type="digest",
         )
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
 
         checker._form.detect = AsyncMock(side_effect=Exception("form exploded"))
         checker._msf.detect = AsyncMock(return_value=msf_result)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
 
         item = CameraFingerprint(ip="1.1.1.1", port=80, fingerprint=Fingerprint())
         results = await checker.check(item)
 
         assert len(results) == 1
         assert results[0].auth_type == "digest"
+
+
+class TestAuthCheckerVendorProbeMerge:
+    """AuthChecker merge logic with VendorProbeDetector."""
+
+    @pytest.mark.asyncio
+    async def test_form_beats_vendor_probe_high(self):
+        """FormDetector result preferred over VendorProbe high confidence."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        form_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="form",
+            form_action="/login", password_field="pass",
+            detection_method="form",
+        )
+        vendor_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="digest",
+            confidence="high", detection_method="vendor_probe",
+        )
+        msf_no = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+
+        checker._form.detect = AsyncMock(return_value=form_result)
+        checker._vendor_probe.detect = AsyncMock(return_value=vendor_result)
+        checker._msf.detect = AsyncMock(return_value=msf_no)
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(vendor="dahua"),
+        )
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].auth_type == "form"
+
+    @pytest.mark.asyncio
+    async def test_vendor_probe_high_beats_msf(self):
+        """VendorProbe high confidence beats MSFDetector."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        form_no = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+        vendor_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="digest",
+            confidence="high", detection_method="vendor_probe",
+        )
+        msf_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="basic",
+            msf_module="auxiliary/scanner/http/http_login",
+        )
+
+        checker._form.detect = AsyncMock(return_value=form_no)
+        checker._vendor_probe.detect = AsyncMock(return_value=vendor_result)
+        checker._msf.detect = AsyncMock(return_value=msf_result)
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(vendor="dahua"),
+        )
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].auth_type == "digest"
+        assert results[0].confidence == "high"
+
+    @pytest.mark.asyncio
+    async def test_msf_beats_vendor_probe_low(self):
+        """MSFDetector beats VendorProbe low confidence."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        form_no = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+        vendor_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="spa_login",
+            confidence="low", detection_method="heuristic",
+        )
+        msf_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="basic",
+            msf_module="auxiliary/scanner/http/http_login",
+        )
+
+        checker._form.detect = AsyncMock(return_value=form_no)
+        checker._vendor_probe.detect = AsyncMock(return_value=vendor_result)
+        checker._msf.detect = AsyncMock(return_value=msf_result)
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(vendor="dahua"),
+        )
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].auth_type == "basic"
+
+    @pytest.mark.asyncio
+    async def test_vendor_probe_low_used_as_last_resort(self):
+        """VendorProbe low confidence used when form and msf find nothing."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+        vendor_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="spa_login",
+            confidence="low", detection_method="heuristic",
+        )
+
+        checker._form.detect = AsyncMock(return_value=no_login)
+        checker._vendor_probe.detect = AsyncMock(return_value=vendor_result)
+        checker._msf.detect = AsyncMock(return_value=no_login)
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(vendor="dahua"),
+        )
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].auth_type == "spa_login"
+        assert results[0].confidence == "low"
+
+    @pytest.mark.asyncio
+    async def test_all_three_fail_returns_no_login(self):
+        """All detectors find nothing → has_login=False."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+
+        checker._form.detect = AsyncMock(return_value=no_login)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
+        checker._msf.detect = AsyncMock(return_value=no_login)
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(vendor="dahua"),
+        )
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].has_login is False
+
+    @pytest.mark.asyncio
+    async def test_vendor_probe_exception_ignored(self):
+        """VendorProbe exception doesn't break auth checking."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        form_result = AuthInfo(
+            port=80, protocol="http", has_login=True, auth_type="form",
+            form_action="/login",
+        )
+
+        checker._form.detect = AsyncMock(return_value=form_result)
+        checker._vendor_probe.detect = AsyncMock(side_effect=Exception("probe exploded"))
+        checker._msf.detect = AsyncMock(return_value=AuthInfo(
+            port=80, protocol="http", has_login=False, auth_type="unknown",
+        ))
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(vendor="dahua"),
+        )
+        results = await checker.check(item)
+
+        assert len(results) == 1
+        assert results[0].has_login is True
+
+    @pytest.mark.asyncio
+    async def test_vendor_passed_to_vendor_probe(self):
+        """Vendor from CameraFingerprint.fingerprint.vendor is passed to VendorProbeDetector."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+        checker._form.detect = AsyncMock(return_value=no_login)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
+        checker._msf.detect = AsyncMock(return_value=no_login)
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(vendor="axis"),
+        )
+        await checker.check(item)
+
+        checker._vendor_probe.detect.assert_called_once_with(
+            "1.1.1.1", 80, "http", "axis",
+        )
+
+    @pytest.mark.asyncio
+    async def test_vendor_none_when_no_fingerprint_vendor(self):
+        """Vendor=None passed when fingerprint has no vendor."""
+        from src.layers.layer3_cve_searcher.auth_checker import AuthChecker
+        from src.core.config import AuthCheckConfig
+        from src.storage.schemas import CameraFingerprint, Fingerprint, AuthInfo
+
+        checker = AuthChecker(AuthCheckConfig(), msf_client=None)
+
+        no_login = AuthInfo(port=80, protocol="http", has_login=False, auth_type="unknown")
+        checker._form.detect = AsyncMock(return_value=no_login)
+        checker._vendor_probe.detect = AsyncMock(return_value=no_login)
+        checker._msf.detect = AsyncMock(return_value=no_login)
+
+        item = CameraFingerprint(
+            ip="1.1.1.1", port=80,
+            fingerprint=Fingerprint(),
+        )
+        await checker.check(item)
+
+        checker._vendor_probe.detect.assert_called_once_with(
+            "1.1.1.1", 80, "http", None,
+        )
 
 
 class TestCVESearcherAuthIntegration:
