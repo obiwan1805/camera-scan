@@ -33,7 +33,7 @@ queue:
   type: in_memory
 
 layer3:
-  enabled: true
+  enabled: false
   nvd:
     api_key: ""
     base_url: "https://services.nvd.nist.gov/rest/json/cves/2.0"

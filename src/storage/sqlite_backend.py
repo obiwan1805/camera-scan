@@ -3,6 +3,7 @@ import asyncio
 import aiosqlite
 import csv
 import io
+import ipaddress
 import json
 from typing import Any, List, Optional
 from .base import StorageBackend
@@ -607,3 +608,100 @@ class SQLiteBackend(StorageBackend):
             return buf.getvalue(), len(rows)
 
         raise ValueError(f"dump_table_csv does not support table '{table}'")
+
+    # --- Cascade delete by target spec (for /target remove) ---
+
+    _CASCADE_TABLES = ("port_scans", "fingerprints", "raw_responses")
+
+    @staticmethod
+    def _target_to_int_range(spec: str) -> tuple[int, int]:
+        """Return (start_int, end_int) for an IP/CIDR/range spec."""
+        if "/" in spec:
+            net = ipaddress.ip_network(spec, strict=False)
+            return int(net.network_address), int(net.broadcast_address)
+        if "-" in spec:
+            parts = spec.split("-")
+            if len(parts) == 2:
+                start = int(ipaddress.ip_address(parts[0].strip()))
+                end = int(ipaddress.ip_address(parts[1].strip()))
+                return start, end
+        addr = int(ipaddress.ip_address(spec))
+        return addr, addr
+
+    @staticmethod
+    def _ip_in_range(ip_str: str, start: int, end: int) -> bool:
+        try:
+            val = int(ipaddress.ip_address(ip_str))
+            return start <= val <= end
+        except ValueError:
+            return False
+
+    async def count_target_results(self, target_spec: str) -> dict[str, int]:
+        """Count rows in each results table whose IP falls inside target_spec."""
+        if not self._conn:
+            await self.connect()
+        start, end = self._target_to_int_range(target_spec)
+        counts: dict[str, int] = {}
+        for table in self._CASCADE_TABLES:
+            cursor = await self._conn.execute(f"SELECT ip FROM {table}")
+            rows = await cursor.fetchall()
+            n = 0
+            for (ip,) in rows:
+                if self._ip_in_range(ip, start, end):
+                    n += 1
+            counts[table] = n
+        # claims: item_key is "ip:port"
+        cursor = await self._conn.execute("SELECT item_key FROM claims")
+        rows = await cursor.fetchall()
+        n = 0
+        for (key,) in rows:
+            ip = key.rsplit(":", 1)[0] if ":" in key else key
+            if self._ip_in_range(ip, start, end):
+                n += 1
+        counts["claims"] = n
+        return counts
+
+    async def clear_target_results(self, target_spec: str) -> dict[str, int]:
+        """Delete rows in port_scans/fingerprints/raw_responses/claims whose IP
+        falls inside target_spec. Returns {table: deleted_count}."""
+        if not self._conn:
+            await self.connect()
+        start, end = self._target_to_int_range(target_spec)
+        counts: dict[str, int] = {}
+
+        for table in self._CASCADE_TABLES:
+            cursor = await self._conn.execute(f"SELECT ip FROM {table}")
+            rows = await cursor.fetchall()
+            matching = [ip for (ip,) in rows if self._ip_in_range(ip, start, end)]
+            deleted = 0
+            for i in range(0, len(matching), 500):
+                batch = matching[i:i + 500]
+                placeholders = ",".join("?" for _ in batch)
+                cur = await self._conn.execute(
+                    f"DELETE FROM {table} WHERE ip IN ({placeholders})", batch
+                )
+                if cur.rowcount and cur.rowcount > 0:
+                    deleted += cur.rowcount
+            counts[table] = deleted
+
+        # claims: filter by item_key prefix "ip:"
+        cursor = await self._conn.execute("SELECT item_key FROM claims")
+        rows = await cursor.fetchall()
+        matching_keys = []
+        for (key,) in rows:
+            ip = key.rsplit(":", 1)[0] if ":" in key else key
+            if self._ip_in_range(ip, start, end):
+                matching_keys.append(key)
+        deleted = 0
+        for i in range(0, len(matching_keys), 500):
+            batch = matching_keys[i:i + 500]
+            placeholders = ",".join("?" for _ in batch)
+            cur = await self._conn.execute(
+                f"DELETE FROM claims WHERE item_key IN ({placeholders})", batch
+            )
+            if cur.rowcount and cur.rowcount > 0:
+                deleted += cur.rowcount
+        counts["claims"] = deleted
+
+        await self._conn.commit()
+        return counts

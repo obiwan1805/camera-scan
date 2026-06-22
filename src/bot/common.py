@@ -11,7 +11,9 @@ async def safe_send(interaction: discord.Interaction, **kwargs):
         else:
             await interaction.response.send_message(**kwargs)
     except Exception as e:
-        print(f"[Discord] Failed to respond to /{interaction.command.name}: {e}")
+        # interaction.command is None for component interactions (button clicks)
+        cmd = interaction.command.name if interaction.command else "<component>"
+        print(f"[Discord] Failed to respond to /{cmd}: {e}")
 
 
 class PaginatedView(discord.ui.View):
@@ -34,6 +36,16 @@ class PaginatedView(discord.ui.View):
             self.page += 1
         await interaction.response.edit_message(embed=self.embeds[self.page], view=self)
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        print(f"[PaginatedView error] {type(error).__name__}: {error}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"Operation failed: {error}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"Operation failed: {error}", ephemeral=True)
+        except Exception:
+            pass
+
 
 class ConfirmView(discord.ui.View):
     """Confirm or cancel an action."""
@@ -53,6 +65,16 @@ class ConfirmView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         await interaction.response.edit_message(content="Cancelled.", view=None)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        print(f"[ConfirmView error] {type(error).__name__}: {error}")
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"Operation failed: {error}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"Operation failed: {error}", ephemeral=True)
+        except Exception:
+            pass
 
 
 async def global_help(interaction: discord.Interaction):
