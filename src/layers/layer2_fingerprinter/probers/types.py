@@ -17,6 +17,9 @@ class CollectedData(BaseModel):
     onvif_response: Optional[str] = None
     favicon_hash: Optional[int] = None
     ssl_subject: Optional[str] = None
+    html_hash: Optional[int] = None
+    dom_hash: Optional[int] = None
+    title_hash: Optional[int] = None
 
     raw_responses: List[RawResponse] = []
     protocols: List[str] = []

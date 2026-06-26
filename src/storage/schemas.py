@@ -34,6 +34,11 @@ class Fingerprint(BaseModel):
     evidence_items: List[EvidenceItem] = []
     cves: List[str] = []
 
+    favicon_hash: Optional[int] = None
+    html_hash: Optional[int] = None
+    dom_hash: Optional[int] = None
+    title_hash: Optional[int] = None
+
     @property
     def evidence(self) -> Optional[str]:
         return "; ".join(

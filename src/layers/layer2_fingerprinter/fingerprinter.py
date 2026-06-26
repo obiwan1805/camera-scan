@@ -13,6 +13,7 @@ from src.layers.layer2_fingerprinter.probers import (
     HTTPProber, HTTPSProber, RTSPProber, ONVIFProber, FaviconProber,
 )
 from src.layers.layer2_fingerprinter.probers.types import CollectedData
+from src.layers.layer2_fingerprinter.probers.hashes import compute_html_hashes
 from src.utils.logging import setup_logger
 
 
@@ -175,6 +176,12 @@ class Fingerprinter(Filter):
         # Phase 3: Aggregate matches into best fingerprint
         fp = self._resolver.resolve(matches)
 
+        if fp is not None:
+            fp.favicon_hash = collected.favicon_hash
+            fp.html_hash = collected.html_hash
+            fp.dom_hash = collected.dom_hash
+            fp.title_hash = collected.title_hash
+
         return fp, collected.raw_responses, collected.protocols
 
     async def _collect(self, ip: str, port: int) -> CollectedData:
@@ -221,6 +228,8 @@ class Fingerprinter(Filter):
                 or partial.ssl_subject
             ):
                 collected.protocols.append(prober.protocol)
+
+        collected.html_hash, collected.dom_hash, collected.title_hash = compute_html_hashes(collected.html)
 
         return collected
 
