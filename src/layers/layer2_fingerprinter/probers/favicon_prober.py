@@ -1,4 +1,5 @@
 """Favicon prober -- computes MMH3 hash of favicon for vendor identification."""
+import codecs
 from typing import Optional, Set
 import aiohttp
 import mmh3
@@ -14,6 +15,29 @@ _FAVICON_PATHS = [
     "/img/favicon.ico",
     "/favicon.png",
 ]
+
+# Magic-byte prefixes for image formats Shodan treats as favicons.
+# Used to reject HTML error pages and HTTP response bytes that some servers
+# return with status 200 — without this check, those bytes get hashed and
+# produce garbage that never matches a known signature.
+_IMAGE_MAGIC = (
+    b"\x00\x00\x01\x00",        # ICO
+    b"\x89PNG\r\n\x1a\n",        # PNG
+    b"\xff\xd8\xff",             # JPEG
+    b"GIF87a", b"GIF89a",        # GIF
+    b"RIFF",                     # WEBP (RIFF....WEBP)
+    b"<svg", b"<?xml",           # SVG
+)
+
+
+def _looks_like_image(data: bytes) -> bool:
+    """Quick magic-byte check. False = reject and skip hashing."""
+    if not data:
+        return False
+    # RIFF needs a WEBP tag at offset 8 to be a real favicon
+    if data.startswith(b"RIFF"):
+        return len(data) >= 12 and data[8:12] == b"WEBP"
+    return any(data.startswith(m) for m in _IMAGE_MAGIC)
 
 
 class FaviconProber(Prober):
@@ -85,6 +109,13 @@ class FaviconProber(Prober):
                 if len(data) > 10240:
                     return False
 
+                # Some servers return HTML error pages or leak raw HTTP
+                # response bytes with status 200. Reject those — hashing
+                # non-image bytes produces garbage that never matches any
+                # signature and breaks comparison with Shodan.
+                if not _looks_like_image(data):
+                    return False
+
                 collected.raw_responses.append(RawResponse(
                     ip=ip, port=port, module="favicon", endpoint=path,
                     status_code=resp.status,
@@ -92,7 +123,11 @@ class FaviconProber(Prober):
                     raw_data=data
                 ))
 
-                hash_value = mmh3.hash(data)
+                # Shodan's documented algorithm: mmh3 over the base64-encoded
+                # bytes (with trailing newline, as codecs.encode produces).
+                # This matches Shodan's reported http.favicon.hash and the
+                # values stored in our signature YAMLs.
+                hash_value = mmh3.hash(codecs.encode(data, "base64"))
                 collected.favicon_hash = hash_value
                 return True
 

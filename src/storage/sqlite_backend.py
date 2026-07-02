@@ -594,7 +594,7 @@ class SQLiteBackend(StorageBackend):
             rows = await cursor.fetchall()
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow(["ip", "port", "protocol", "vendor", "model", "version", "weight", "cves", "favicon_hash", "html_hash", "dom_hash", "title_hash", "timestamp"])
+            writer.writerow(["ip", "port", "protocol", "vendor", "model", "version", "weight", "cves", "favicon_hash", "html_hash", "title_hash", "timestamp"])
             for ip, port, protocol, weight, timestamp, fp_json in rows:
                 try:
                     fp = json.loads(fp_json) if fp_json else {}
@@ -606,9 +606,8 @@ class SQLiteBackend(StorageBackend):
                 cves = ";".join(fp.get("cves") or [])
                 favicon_hash = fp.get("favicon_hash") if fp.get("favicon_hash") is not None else ""
                 html_hash = fp.get("html_hash") if fp.get("html_hash") is not None else ""
-                dom_hash = fp.get("dom_hash") if fp.get("dom_hash") is not None else ""
                 title_hash = fp.get("title_hash") if fp.get("title_hash") is not None else ""
-                writer.writerow([ip, port, protocol or "", vendor, model, version, weight, cves, favicon_hash, html_hash, dom_hash, title_hash, timestamp])
+                writer.writerow([ip, port, protocol or "", vendor, model, version, weight, cves, favicon_hash, html_hash, title_hash, timestamp])
             return buf.getvalue(), len(rows)
 
         raise ValueError(f"dump_table_csv does not support table '{table}'")

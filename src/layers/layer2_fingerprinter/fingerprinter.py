@@ -179,7 +179,6 @@ class Fingerprinter(Filter):
         if fp is not None:
             fp.favicon_hash = collected.favicon_hash
             fp.html_hash = collected.html_hash
-            fp.dom_hash = collected.dom_hash
             fp.title_hash = collected.title_hash
 
         return fp, collected.raw_responses, collected.protocols
@@ -229,7 +228,7 @@ class Fingerprinter(Filter):
             ):
                 collected.protocols.append(prober.protocol)
 
-        collected.html_hash, collected.dom_hash, collected.title_hash = compute_html_hashes(collected.html)
+        collected.html_hash, collected.title_hash = compute_html_hashes(collected.html)
 
         return collected
 

@@ -7,6 +7,22 @@ from .types import CollectedData
 from src.storage.schemas import RawResponse
 from src.utils.logging import setup_logger
 
+# nginx and Apache both emit one of these phrases when a plain-HTTP request
+# hits an HTTPS-only port. Detecting it lets us discard the mis-probed
+# response so HTTPSProber's real fetch isn't shadowed in the merge step.
+_TLS_PORT_ERROR_MARKERS = (
+    "400 The plain HTTP request was sent to HTTPS port",
+    "You're talking plain HTTP",
+    "Client sent an HTTP request to an HTTPS server",
+)
+
+
+def _is_tls_port_error_page(body: Optional[str]) -> bool:
+    """Detect nginx/Apache 'plain HTTP to HTTPS port' 400 error pages."""
+    if not body or len(body) > 1000:
+        return False
+    return any(m in body for m in _TLS_PORT_ERROR_MARKERS)
+
 
 class HTTPProber(Prober):
     """Collects data via HTTP: main page, headers, and all signature endpoint probes."""
@@ -33,7 +49,10 @@ class HTTPProber(Prober):
         try:
             session = await self._get_session()
             html, headers = await self._fetch_root(ip, port, session, collected)
-            if html:
+            # Skip storing TLS-port error pages — they're probe artifacts.
+            # HTTPSProber will fetch the real page; storing the 400 page here
+            # would shadow it via the merge logic in Fingerprinter._collect.
+            if html and not _is_tls_port_error_page(html):
                 collected.html = html
             if headers:
                 collected.headers.update(headers)
@@ -60,6 +79,12 @@ class HTTPProber(Prober):
                         html = await resp.text()
                     except Exception:
                         pass
+
+                # Discard TLS-port error pages outright — don't record them
+                # as raw_responses either, so downstream signature matching
+                # and hash computation see nothing from this failed probe.
+                if _is_tls_port_error_page(html):
+                    return None, headers
 
                 collected.raw_responses.append(RawResponse(
                     ip=ip, port=port, module="http", endpoint="/",
